@@ -1,0 +1,88 @@
+{
+  "datapack": "payledger-standards-guard",
+  "standardsDir": "standards",
+  "targetDir": "packages/payledger",
+  "fixturePath": "fixtures/meko/mock-datapack.json",
+  "rules": [
+    {
+      "id": "S1",
+      "adrId": "ADR-001",
+      "adrFile": "ADR-001-integer-cents.md",
+      "title": "Integer Minor Units and Banker's Rounding",
+      "severity": "error",
+      "category": "financial",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["money", "cents", "rounding", "float", "precision"]
+    },
+    {
+      "id": "S2",
+      "adrId": "ADR-002",
+      "adrFile": "ADR-002-idempotency-keys.md",
+      "title": "Mandatory Idempotency Key on Money Mutations",
+      "severity": "error",
+      "category": "financial",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["idempotency", "payouts", "refunds", "retry", "conflict"]
+    },
+    {
+      "id": "S3",
+      "adrId": "ADR-003",
+      "adrFile": "ADR-003-append-only-ledger.md",
+      "title": "Strict Double-Entry and Append-Only Ledger",
+      "severity": "error",
+      "category": "financial",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["ledger", "double-entry", "append-only", "reversal", "immutable"]
+    },
+    {
+      "id": "S4",
+      "adrId": "ADR-004",
+      "adrFile": "ADR-004-zero-financial-pii.md",
+      "title": "Zero Financial PII Leakage in Responses and Logs",
+      "severity": "error",
+      "category": "security",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["pii", "bank_account_number", "routing_number", "tax_id", "logging"]
+    },
+    {
+      "id": "S5",
+      "adrId": "ADR-005",
+      "adrFile": "ADR-005-atomic-payout-lock.md",
+      "title": "Atomic Transaction and Balance Lock on Payouts",
+      "severity": "error",
+      "category": "architecture",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["transaction", "payout", "balance", "concurrency", "lock"]
+    },
+    {
+      "id": "S6",
+      "adrId": "ADR-006",
+      "adrFile": "ADR-006-webhook-hmac-security.md",
+      "title": "HMAC Signature Verification Before Webhook Parsing",
+      "severity": "error",
+      "category": "security",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["webhook", "hmac", "signature", "replay", "timestamp"]
+    },
+    {
+      "id": "S7",
+      "adrId": "ADR-007",
+      "adrFile": "ADR-007-immutable-invoice-snapshots.md",
+      "title": "Immutable Invoice and Fee Snapshots",
+      "severity": "error",
+      "category": "financial",
+      "globs": ["packages/payledger/src/**/*.ts"],
+      "tags": ["invoice", "snapshot", "fee", "tax", "bps"]
+    },
+    {
+      "id": "S8",
+      "adrId": "ADR-008",
+      "adrFile": "ADR-008-memory-governance.md",
+      "title": "Human-Gated Standards and Anti-Context-Poisoning",
+      "severity": "error",
+      "category": "governance",
+      "globs": ["standards/**/*.md", "guard.config.json", "packages/payledger/src/**/*.ts"],
+      "tags": ["governance", "memory_promote", "approval", "standards", "poisoning"]
+    }
+  ]
+}

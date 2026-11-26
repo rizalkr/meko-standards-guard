@@ -1,0 +1,14 @@
+[mcp_servers.meko]
+command = "npx"
+args = [
+  "-y",
+  "@yugabytedb/meko-mcp@latest",
+  "--client",
+  "codex",
+  "--url",
+  "https://mcp.mekodata.ai/mcp"
+]
+
+[mcp_servers.meko.env]
+MEKO_API_TOKEN = "${MEKO_API_TOKEN}"
+MEKO_DATAPACK = "payledger-standards-guard"

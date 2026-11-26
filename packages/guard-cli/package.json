@@ -1,0 +1,17 @@
+{
+  "name": "@meko-guard/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "standards-guard": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@meko-guard/core": "*",
+    "commander": "^13.0.0"
+  }
+}

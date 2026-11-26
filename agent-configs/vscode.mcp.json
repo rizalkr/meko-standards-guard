@@ -1,0 +1,20 @@
+{
+  "servers": {
+    "meko": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@yugabytedb/meko-mcp@latest",
+        "--client",
+        "vscode",
+        "--url",
+        "https://mcp.mekodata.ai/mcp"
+      ],
+      "env": {
+        "MEKO_API_TOKEN": "${env:MEKO_API_TOKEN}",
+        "MEKO_DATAPACK": "payledger-standards-guard"
+      }
+    }
+  }
+}

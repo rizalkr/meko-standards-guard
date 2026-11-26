@@ -1,0 +1,142 @@
+{
+  "datapack": "payledger-standards-guard",
+  "knowledge": [
+    {
+      "id": "ADR-001",
+      "ruleId": "S1",
+      "title": "ADR-001: Integer Minor Units and Banker's Rounding (Rule S1)",
+      "content": "# ADR-001: Integer Minor Units and Banker's Rounding (Rule S1)\n\n- **Status**: Accepted\n- **Rule ID**: `S1`\n- **Category**: Financial Invariant\n\n## Context\nFloating-point arithmetic (`0.1 + 0.2 !== 0.3`) introduces penny drift across invoices, fee splits, and double-entry ledger totals. Over thousands of payouts, 1-cent rounding mismatches break ledger reconciliation.\n\n## Decision\n1. All monetary amounts in database columns, DTOs, and service logic MUST be represented as integer minor units (`*_cents`, `Number.isSafeInteger`).\n2. Floating-point arithmetic (`* 0.11`, `/ 100`, `parseFloat`) on monetary values is forbidden.\n3. Percentage calculations (fees, taxes) MUST use basis points (`bps`, where `100 bps = 1%`) and the shared banker's rounding (half-to-even) integer helper.\n\n## Enforcement\n- AST check rejects non-integer monetary literals and float multiplication/division on money variables.\n- Ledger invariant tests verify zero rounding drift across fee/tax splits.",
+      "tags": [
+        "money",
+        "cents",
+        "rounding",
+        "float",
+        "precision"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-002",
+      "ruleId": "S2",
+      "title": "ADR-002: Mandatory Idempotency Keys on Money Mutations (Rule S2)",
+      "content": "# ADR-002: Mandatory Idempotency Keys on Money Mutations (Rule S2)\n\n- **Status**: Accepted\n- **Rule ID**: `S2`\n- **Category**: Financial Invariant\n\n## Context\n**Postmortem — Incident #41 (Duplicate Payout on Retry):** A payment gateway timeout caused the client worker to retry `POST /payouts`. Because the endpoint lacked an idempotency check, the merchant was paid twice for the same settlement batch.\n\n## Decision\n1. Every money-mutating HTTP endpoint (`POST /invoices`, `POST /payouts`, `POST /refunds`, `POST /payouts/:id/reverse`) MUST require an `Idempotency-Key` header.\n2. Requests with an existing `Idempotency-Key` MUST compare the SHA-256 hash of the canonical request payload:\n   - Same key + same payload hash -> replay stored response (`200`/`201`) without re-executing side effects.\n   - Same key + different payload hash -> return `409 Conflict`.\n\n## Enforcement\n- AST check verifies mutation routes apply the `requireIdempotency` guard.\n- Integration tests replay identical and conflicting payloads.",
+      "tags": [
+        "idempotency",
+        "payouts",
+        "refunds",
+        "retry",
+        "conflict"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-003",
+      "ruleId": "S3",
+      "title": "ADR-003: Strict Double-Entry and Append-Only Ledger (Rule S3)",
+      "content": "# ADR-003: Strict Double-Entry and Append-Only Ledger (Rule S3)\n\n- **Status**: Accepted\n- **Rule ID**: `S3`\n- **Category**: Financial Invariant\n\n## Context\nMutating or deleting historical rows in `ledger_entries` destroys the financial audit trail and makes external reconciliation impossible.\n\n## Decision\n1. `ledger_entries` is strictly **append-only**. `UPDATE` and `DELETE` queries against `ledger_entries` are strictly forbidden.\n2. Corrections, refunds, and cancellations MUST append a new balanced reversing entry (`entry_type = 'REVERSAL'`) referencing the original `tx_group_id`.\n3. Every `tx_group_id` MUST satisfy `SUM(debit_cents) === SUM(credit_cents)`.\n\n## Enforcement\n- AST check rejects `db.update(ledgerEntries)` and `db.delete(ledgerEntries)`.\n- Invariant tests verify global and per-group debit/credit balance after every operation.",
+      "tags": [
+        "ledger",
+        "double-entry",
+        "append-only",
+        "reversal",
+        "immutable"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-004",
+      "ruleId": "S4",
+      "title": "ADR-004: Zero Financial PII Leakage in Responses and Logs (Rule S4)",
+      "content": "# ADR-004: Zero Financial PII Leakage in Responses and Logs (Rule S4)\n\n- **Status**: Accepted\n- **Rule ID**: `S4`\n- **Category**: Security\n\n## Context\nExposing raw merchant records (`SELECT *` / `db.select().from(merchants)`) or logging full request/DB payloads leaks sensitive financial PII (`bank_account_number`, `routing_number`, `tax_id`) to API consumers and log aggregators.\n\n## Decision\n1. Sensitive fields (`bank_account_number`, `routing_number`, `tax_id`) MUST NEVER appear in HTTP JSON responses or `console.*` / logger calls.\n2. Endpoints MUST project explicit safe columns or pass records through `toPublicMerchantDto(...)`; returning raw `merchants` rows directly is forbidden.\n\n## Enforcement\n- AST taint analysis traces `merchants` queries and forbidden PII identifiers into `c.json(...)` and logger calls.",
+      "tags": [
+        "pii",
+        "bank_account_number",
+        "routing_number",
+        "tax_id",
+        "logging"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-005",
+      "ruleId": "S5",
+      "title": "ADR-005: Atomic Transaction and Balance Lock on Payouts (Rule S5)",
+      "content": "# ADR-005: Atomic Transaction and Balance Lock on Payouts (Rule S5)\n\n- **Status**: Accepted\n- **Rule ID**: `S5`\n- **Category**: Architecture\n\n## Context\nPerforming a balance read followed by a separate payout insert outside a database transaction creates a TOCTOU (Time-of-Check to Time-of-Use) race condition allowing concurrent requests to overdraft a merchant's payable balance.\n\n## Decision\n1. All payout and settlement balance checks MUST execute inside the same `db.transaction(...)` block as the corresponding `ledger_entries` insert.\n2. Balance availability MUST be computed from posted ledger entries inside the transaction before writing settlement entries.\n\n## Enforcement\n- AST check verifies payout/settlement services wrap balance reads and ledger writes in `db.transaction(...)`.\n- Concurrency tests assert that parallel payout requests cannot overdraft available balance.",
+      "tags": [
+        "transaction",
+        "payout",
+        "balance",
+        "concurrency",
+        "lock"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-006",
+      "ruleId": "S6",
+      "title": "ADR-006: HMAC Signature Verification Before Webhook Parsing (Rule S6)",
+      "content": "# ADR-006: HMAC Signature Verification Before Webhook Parsing (Rule S6)\n\n- **Status**: Accepted\n- **Rule ID**: `S6`\n- **Category**: Security\n\n## Context\nParsing untrusted webhook JSON before verifying its cryptographic signature exposes the server to spoofed payment confirmations, replay attacks, and parser DoS.\n\n## Decision\n1. Inbound webhook handlers MUST read raw request bytes (`await c.req.text()`) and verify the `X-Signature` HMAC-SHA256 digest using constant-time comparison (`crypto.timingSafeEqual`) BEFORE calling `JSON.parse`.\n2. Webhook timestamps (`X-Timestamp`) older than 300 seconds MUST be rejected to block replay attacks.\n3. Failed webhook payloads MUST be logged without PII.\n\n## Enforcement\n- AST check verifies `verifyWebhookSignature` / `timingSafeEqual` runs before `JSON.parse` in webhook handlers.",
+      "tags": [
+        "webhook",
+        "hmac",
+        "signature",
+        "replay",
+        "timestamp"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-007",
+      "ruleId": "S7",
+      "title": "ADR-007: Immutable Invoice and Fee Snapshots (Rule S7)",
+      "content": "# ADR-007: Immutable Invoice and Fee Snapshots (Rule S7)\n\n- **Status**: Accepted\n- **Rule ID**: `S7`\n- **Category**: Financial Invariant\n\n## Context\nIf an invoice dynamically joins the merchant's current `fee_bps` or `tax_rate_bps` when viewed, changing a merchant's pricing tier later silently alters historical invoice totals.\n\n## Decision\n1. Invoice creation MUST persist immutable `subtotal_cents`, `tax_rate_bps`, `tax_cents`, `fee_bps`, `fee_cents`, and `total_cents` columns on the `invoices` row.\n2. Invoice retrieval endpoints MUST read stored snapshot columns and MUST NOT recompute totals from live merchant rates.\n\n## Enforcement\n- Contract tests update a merchant's fee tier after invoice creation and assert historical invoice totals remain unchanged.",
+      "tags": [
+        "invoice",
+        "snapshot",
+        "fee",
+        "tax",
+        "bps"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    },
+    {
+      "id": "ADR-008",
+      "ruleId": "S8",
+      "title": "ADR-008: Human-Gated Standards and Anti-Context-Poisoning (Rule S8)",
+      "content": "# ADR-008: Human-Gated Standards and Anti-Context-Poisoning (Rule S8)\n\n- **Status**: Accepted\n- **Rule ID**: `S8`\n- **Category**: Governance\n\n## Context\nAutonomous coding agents must learn from mistakes, but allowing agents to write directly to shared team memory risks **context poisoning** (an agent hallucinating or weakening a security/financial rule).\n\n## Decision\n1. All agent-discovered learnings and violation traces are written to **private/candidate memory** (`memory_add`) and MUST NOT affect other agents until reviewed.\n2. Only a human maintainer can promote a candidate learning to **shared memory** (`memory_promote`) with an explicit audit reason logged to Meko Conversations (`conversation_add_message`).\n3. Direct agent modifications to `standards/*.md`, `guard.config.json`, or official fee/tax constants require explicit human approval.\n\n## Enforcement\n- `guard check` flags unapproved modifications to `standards/` or `guard.config.json`.\n- `MekoClient` isolates `private` memories by `agentId` until `memoryPromote` is called.",
+      "tags": [
+        "governance",
+        "memory_promote",
+        "approval",
+        "standards",
+        "poisoning"
+      ],
+      "updatedAt": "2026-11-26T01:51:41.470Z"
+    }
+  ],
+  "memories": [],
+  "conversations": [],
+  "artifacts": [
+    {
+      "name": "seed-summary.json",
+      "contentHash": "ae1c65d2ffe89d6ed467152d34aae9e27cd90165915ec2037db2d61fbfc4e33a",
+      "payload": {
+        "datapack": "payledger-standards-guard",
+        "mode": "mock",
+        "adrCount": 8,
+        "adrIds": [
+          "ADR-001",
+          "ADR-002",
+          "ADR-003",
+          "ADR-004",
+          "ADR-005",
+          "ADR-006",
+          "ADR-007",
+          "ADR-008"
+        ]
+      },
+      "createdAt": "2026-11-26T01:51:41.478Z"
+    }
+  ],
+  "selfLearning": []
+}
