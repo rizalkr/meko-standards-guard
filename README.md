@@ -22,12 +22,18 @@ flowchart LR
 
 ```bash
 npm install
-npm run typecheck
 npm run build
+npm run typecheck
 npm test
 npm run guard:seed -- --mode mock
 npm run guard:status -- --mode mock
 ```
+
+## Documentation
+
+- [`docs/PRD.md`](./docs/PRD.md) — Product Requirements, ContextCon judging alignment, functional specs (`FR-1`–`FR-9`), and metrics.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — End-to-end ADLC architecture, 5 Meko primitives, 3-mode client, and `S1`–`S8` enforcement matrix.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — 7-week delivery milestones, Meko Free-tier quota budget, and demo execution plan.
 
 ## Switching to Live Meko MCP
 
@@ -43,8 +49,12 @@ npm run guard:status -- --mode mock
 ## Monorepo Layout
 
 - `packages/core` (`@meko-guard/core`): Config loader, 5-pillar Meko client (`mock` / `record` / `live`), and schema types.
-- `packages/guard-cli` (`@meko-guard/cli`): CLI (`seed`, `status`, and upcoming ADLC gates).
+- `packages/payledger` (`@meko-guard/payledger`): Local double-entry financial core API (Hono + Drizzle ORM + SQLite) enforcing `S1`–`S7` invariants.
+- `packages/guard-cli` (`@meko-guard/cli`): CLI (`seed`, `status`, and upcoming ADLC gates + MCP server).
+- `packages/guard-engine` *(Week 3)*: `ts-morph` AST & PII taint analyzer, spec checker, Vitest invariant runner, and blast-radius mapper.
+- `packages/guard-ui` *(Week 5)*: Local Governance Control Plane (`localhost:4321`) for human promotion reviews and audit timeline.
 - `standards/`: 8 financial, security, architecture, and governance ADRs (`ADR-001` through `ADR-008`).
 - `specs/`: Sample RFC specs for pre-implementation spec checking.
 - `agent-configs/`: Ready-to-use MCP templates for 6 coding agents.
+- `docs/`: Product requirements, architecture specification, and hackathon execution roadmap.
 - `fixtures/meko/`: Local JSON snapshots for zero-quota offline testing.
