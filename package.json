@@ -21,6 +21,7 @@
     "guard:impact": "tsx packages/guard-cli/src/bin.ts impact",
     "guard:release-gate": "tsx packages/guard-cli/src/bin.ts release-gate",
     "guard:mcp": "tsx packages/guard-cli/src/bin.ts mcp",
+    "guard:bench": "tsx packages/guard-cli/src/bin.ts bench",
     "guard:ui": "tsx packages/guard-ui/server/index.ts"
   },
   "devDependencies": {

@@ -10,6 +10,11 @@ import {
   specCheckAction,
   statusAction
 } from "./actions.js";
+import {
+  benchDryRunAction,
+  benchScoreAction,
+  initBenchmarkManifest
+} from "./bench.js";
 import { resolveMode, type CliContextOptions } from "./context.js";
 import { startGuardMcpServer } from "./mcp/server.js";
 
@@ -310,6 +315,99 @@ program
       if (!result.passed) {
         process.exitCode = 1;
       }
+    }
+  );
+
+program
+  .command("bench")
+  .description("Run tiktoken A/B prompt-budget dry-run or score real Baseline vs. Guarded runs")
+  .option("--input <path>", "Score real agent runs from a JSON benchmark manifest")
+  .option("--out <path>", "Write scored benchmark JSON (e.g. fixtures/benchmark/results.json)")
+  .option("--init-manifest <path>", "Generate a starter 5-task run manifest template")
+  .option("--agent <id>", "Agent ID for dry-run Meko retrieval simulation", "opencode")
+  .option("--baseline-agent <id>", "Baseline agent name for starter manifest", "cursor")
+  .option("--guarded-agent <id>", "Guarded agent name for starter manifest", "opencode")
+  .option("--record-artifact", "Store scored benchmark JSON as a SHA-256 Meko artifact", false)
+  .option("--json", "Output JSON", false)
+  .action(
+    async (cmdOpts: {
+      input?: string;
+      out?: string;
+      initManifest?: string;
+      agent: string;
+      baselineAgent: string;
+      guardedAgent: string;
+      recordArtifact: boolean;
+      json: boolean;
+    }) => {
+      if (cmdOpts.initManifest) {
+        const initRes = initBenchmarkManifest(cmdOpts.initManifest, {
+          baselineAgent: cmdOpts.baselineAgent,
+          guardedAgent: cmdOpts.guardedAgent
+        });
+        if (cmdOpts.json) {
+          console.log(JSON.stringify(initRes, null, 2));
+          return;
+        }
+        console.log(
+          `[standards-guard] Generated ${initRes.taskCount}-task benchmark manifest (${cmdOpts.baselineAgent} vs ${cmdOpts.guardedAgent}) at ${initRes.outputPath}`
+        );
+        return;
+      }
+
+      if (cmdOpts.input) {
+        const scored = await benchScoreAction({
+          ...getContextOptions(),
+          inputPath: cmdOpts.input,
+          outPath: cmdOpts.out,
+          recordArtifact: cmdOpts.recordArtifact
+        });
+        if (cmdOpts.json) {
+          console.log(JSON.stringify(scored, null, 2));
+          return;
+        }
+        console.log(
+          `[standards-guard] Benchmark Scored (${scored.recorded.tokenizer}, tasks=${scored.recorded.tasks.length}):`
+        );
+        for (const t of scored.recorded.tasks) {
+          console.log(
+            `  - ${t.id} (${t.targetEndpoint}): violations=${t.baseline.violations}->${t.guarded.violations}, turns=${t.baseline.correctionTurns}->${t.guarded.correctionTurns}, tokens=${t.baseline.promptTokens}->${t.guarded.promptTokens}`
+          );
+        }
+        console.log(
+          `  Summary: violations ${scored.summary.baselineTotalViolations} -> ${scored.summary.guardedTotalViolations} (${scored.summary.violationReductionPct !== null ? `-${scored.summary.violationReductionPct}%` : "n/a"}), avg turns ${scored.summary.baselineAvgTurns} -> ${scored.summary.guardedAvgTurns}, tokens ${scored.summary.baselineTotalTokens} -> ${scored.summary.guardedTotalTokens}`
+        );
+        if (scored.outPath) {
+          console.log(`[standards-guard] Wrote benchmark results to ${scored.outPath}`);
+        }
+        if (scored.artifactHash) {
+          console.log(`[standards-guard] Artifact SHA-256: ${scored.artifactHash}`);
+        }
+        return;
+      }
+
+      const dryRun = await benchDryRunAction({
+        ...getContextOptions(),
+        agentId: cmdOpts.agent
+      });
+      if (cmdOpts.json) {
+        console.log(JSON.stringify(dryRun, null, 2));
+        return;
+      }
+      console.log(
+        `[standards-guard] Dry-Run Prompt Budget (${dryRun.tokenizer}, mode=${dryRun.mode}, agent=${dryRun.agentId}):`
+      );
+      for (const t of dryRun.tasks) {
+        console.log(
+          `  - ${t.id} (${t.targetEndpoint}): full-ADR=${t.baselineFullAdrTokens} vs Meko=${t.guardedMekoTokens} (${t.tokenDeltaPct > 0 ? "+" : ""}${t.tokenDeltaPct}%) [ADRs: ${t.matchedAdrIds.join(", ") || "none"}]`
+        );
+      }
+      console.log(
+        `  Totals: full-ADR=${dryRun.baselineTotalTokens} tokens vs Meko=${dryRun.guardedTotalTokens} tokens (${dryRun.tokenDeltaPct > 0 ? "+" : ""}${dryRun.tokenDeltaPct}%)`
+      );
+      console.log(
+        `  Note: Dry-run measures tiktoken/cl100k_base prompt budgets only; fixtures/benchmark/results.json was NOT modified.`
+      );
     }
   );
 

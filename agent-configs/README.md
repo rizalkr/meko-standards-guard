@@ -14,8 +14,8 @@ Supported `--client` values include: `cursor`, `opencode`, `claude-code`, `codex
 
 All templates use environment variable placeholders — **never commit real tokens**.
 
-- [`cursor.mcp.json`](./cursor.mcp.json) — Cursor (`.cursor/mcp.json`)
-- [`opencode.json`](./opencode.json) — OpenCode (`opencode.json`)
+- [`cursor.mcp.json`](./cursor.mcp.json) — Cursor (`.cursor/mcp.json`, pre-wired with both `meko` and `standards-guard` MCP servers)
+- [`opencode.json`](./opencode.json) — OpenCode (`opencode.json`, pre-wired with both `meko` and `standards-guard` MCP servers)
 - [`claude-code.mcp.json`](./claude-code.mcp.json) — Claude Code (`.mcp.json`)
 - [`vscode.mcp.json`](./vscode.mcp.json) — VS Code / GitHub Copilot (`.vscode/mcp.json`)
 - [`codex.toml`](./codex.toml) — OpenAI Codex CLI (`~/.codex/config.toml`)
@@ -29,7 +29,7 @@ In addition to the Meko MCP bridge, any agent can attach the local `standards-gu
 node packages/guard-cli/dist/bin.js mcp --mode mock
 ```
 
-Switch `--mode mock` to `--mode live` (with `MEKO_API_TOKEN` set) when running against YugabyteDB Meko live.
+Switch `--mode mock` (or `GUARD_MODE=mock` in [`cursor.mcp.json`](./cursor.mcp.json) and [`opencode.json`](./opencode.json)) to `live` (with `MEKO_API_TOKEN` set) when running against YugabyteDB Meko live.
 
 Exposed tools:
 - `guard_preflight` — query Meko ADRs, shared team memories, agent-private learnings, and self-learning signals
