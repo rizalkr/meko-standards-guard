@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import {
   GuardModeSchema,
@@ -69,6 +70,39 @@ export function resolveGitHead(rootDir: string): string {
 }
 
 /**
+ * Loads KEY=VALUE pairs from <rootDir>/.env into process.env when not already set.
+ */
+function loadDotEnvIfPresent(rootDir: string): void {
+  const envPath = path.join(rootDir, ".env");
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+  const raw = fs.readFileSync(envPath, "utf8");
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const eqIndex = line.indexOf("=");
+    if (eqIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, eqIndex).trim();
+    if (!key || process.env[key] !== undefined) {
+      continue;
+    }
+    let val = line.slice(eqIndex + 1).trim();
+    if (
+      (val.startsWith("\"") && val.endsWith("\"") && val.length >= 2) ||
+      (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+    ) {
+      val = val.slice(1, -1);
+    }
+    process.env[key] = val;
+  }
+}
+
+/**
  * Opens a configured MekoClient, executes the callback, and ensures persistence/disconnect on exit.
  */
 export async function withMekoClient<T>(
@@ -76,6 +110,7 @@ export async function withMekoClient<T>(
   fn: (ctx: GuardClientContext) => Promise<T>
 ): Promise<T> {
   const rootDir = options.rootDir ?? process.cwd();
+  loadDotEnvIfPresent(rootDir);
   const mode = resolveMode(options.mode);
   const config = loadGuardConfig(rootDir);
   const fixturePath = options.fixturePath

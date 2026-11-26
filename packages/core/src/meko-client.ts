@@ -386,12 +386,83 @@ export class LiveMekoClient implements MekoClient {
   private readonly apiToken: string;
   private client: Client | null = null;
   private transport: StreamableHTTPClientTransport | null = null;
+  private datapackId: string | null = null;
+  private resolvedDatapackName: string;
+  private conversationId: string | null = null;
+  private readonly defaultAgentId = "standards-guard:meko-standards-guard";
   private quota: QuotaUsage = createEmptyQuota();
 
   constructor(options: { datapack: string; mcpUrl?: string; apiToken?: string }) {
     this.datapack = options.datapack;
+    this.resolvedDatapackName = options.datapack;
     this.mcpUrl = options.mcpUrl ?? process.env.MEKO_MCP_URL ?? "https://mcp.mekodata.ai/mcp";
     this.apiToken = options.apiToken ?? process.env.MEKO_API_TOKEN ?? "";
+  }
+
+  private formatAgentId(agentId: string): string {
+    return agentId.includes(":") ? agentId : `${agentId}:meko-standards-guard`;
+  }
+
+  private requireSession(): { conversationId: string; datapackId: string | null } {
+    if (!this.conversationId) {
+      throw new Error("LiveMekoClient has no active conversation_id. Call connect() first.");
+    }
+    return {
+      conversationId: this.conversationId,
+      datapackId: this.datapackId
+    };
+  }
+
+  private async callMcpTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    if (!this.client) {
+      throw new Error("LiveMekoClient is not connected. Call connect() first.");
+    }
+    const cleanArgs: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) {
+      if (value !== undefined) {
+        cleanArgs[key] = value;
+      }
+    }
+
+    const result = await this.client.callTool({
+      name,
+      arguments: cleanArgs
+    });
+    const textContent = Array.isArray(result.content)
+      ? result.content.find(
+          (part): part is { type: "text"; text: string } => part.type === "text"
+        )
+      : undefined;
+
+    let parsed: unknown = textContent ? textContent.text : result;
+    if (textContent) {
+      try {
+        parsed = JSON.parse(textContent.text) as unknown;
+      } catch {
+        parsed = textContent.text;
+      }
+    }
+
+    if (result.isError) {
+      const msg = typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+      throw new Error(`Meko MCP tool "${name}" failed: ${msg}`);
+    }
+
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "error" in parsed &&
+      typeof (parsed as { error?: unknown }).error === "string" &&
+      (parsed as { error: string }).error.trim().length > 0
+    ) {
+      const errObj = parsed as { error: string; detail?: string; message?: string };
+      const detail = errObj.detail || errObj.message || "";
+      throw new Error(
+        `Meko MCP tool "${name}" failed: ${errObj.error}${detail ? ` (${detail})` : ""}`
+      );
+    }
+
+    return parsed as T;
   }
 
   async connect(): Promise<void> {
@@ -412,55 +483,228 @@ export class LiveMekoClient implements MekoClient {
       { capabilities: {} }
     );
     await this.client.connect(this.transport);
+
+    const envDatapackId = process.env.MEKO_DATAPACK_ID?.trim();
+    if (envDatapackId) {
+      this.datapackId = envDatapackId;
+    } else {
+      const initialList = await this.callMcpTool<{
+        datapack_id?: string;
+        datapack_name?: string;
+      }>("conversation_list", { limit: 1 });
+      if (initialList.datapack_id) {
+        this.datapackId = initialList.datapack_id;
+      }
+      if (initialList.datapack_name) {
+        this.resolvedDatapackName = initialList.datapack_name;
+      }
+    }
+
+    const bootstrapDatapackId = this.datapackId;
+
+    const createdConv = await this.callMcpTool<{
+      id?: string;
+      conversation_id?: string;
+    }>("conversation_create", {
+      agent_id: this.defaultAgentId,
+      session_id: "standards-guard-governance-session",
+      title: "Meko Standards Guard Governance Session",
+      ...(this.datapackId ? { datapack_id: this.datapackId } : {})
+    });
+
+    const convId = createdConv.id ?? createdConv.conversation_id;
+    if (!convId) {
+      throw new Error("Meko conversation_create did not return a conversation_id.");
+    }
+    this.conversationId = convId;
+
+    try {
+      type DatapackEntry = {
+        id?: string;
+        datapack_id?: string;
+        name?: string;
+        datapack_name?: string;
+      };
+      const dpList = await this.callMcpTool<
+        | DatapackEntry[]
+        | {
+            datapacks?: DatapackEntry[];
+            results?: DatapackEntry[];
+            items?: DatapackEntry[];
+          }
+      >("datapack_list", {
+        conversation_id: this.conversationId
+      });
+
+      const entries = Array.isArray(dpList)
+        ? dpList
+        : (dpList.datapacks ?? dpList.results ?? dpList.items ?? []);
+      const targetLower = this.datapack.toLowerCase();
+      const matched = entries.find((item) => {
+        const name = item.datapack_name ?? item.name;
+        return (
+          name?.toLowerCase() === targetLower ||
+          item.datapack_id === this.datapack ||
+          item.id === this.datapack
+        );
+      });
+      if (matched) {
+        const nextDatapackId = matched.datapack_id ?? matched.id ?? this.datapackId;
+        this.datapackId = nextDatapackId;
+        this.resolvedDatapackName = matched.datapack_name ?? matched.name ?? this.datapack;
+
+        if (nextDatapackId && nextDatapackId !== bootstrapDatapackId) {
+          const targetConv = await this.callMcpTool<{
+            id?: string;
+            conversation_id?: string;
+          }>("conversation_create", {
+            agent_id: this.defaultAgentId,
+            session_id: "standards-guard-governance-session",
+            title: "Meko Standards Guard Governance Session",
+            datapack_id: nextDatapackId
+          });
+          this.conversationId =
+            targetConv.id ?? targetConv.conversation_id ?? this.conversationId;
+        }
+      }
+    } catch {
+      // Keep the caller's resolved default datapack if datapack_list cannot inspect org datapacks.
+    }
   }
 
   async close(): Promise<void> {
     await this.client?.close();
     this.client = null;
     this.transport = null;
+    this.conversationId = null;
   }
 
   getQuotaUsage(): QuotaUsage {
     return { ...this.quota };
   }
 
-  private async callMcpTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
-    if (!this.client) {
-      throw new Error("LiveMekoClient is not connected. Call connect() first.");
+  private normalizeMemoryRecord(
+    raw: Record<string, unknown>,
+    fallbackTier: "private" | "shared" = "private"
+  ): MemoryRecord {
+    let parsedMeta: Record<string, unknown> = {};
+    if (typeof raw.metadata === "string") {
+      try {
+        parsedMeta = JSON.parse(raw.metadata) as Record<string, unknown>;
+      } catch {
+        parsedMeta = {};
+      }
+    } else if (raw.metadata && typeof raw.metadata === "object") {
+      parsedMeta = raw.metadata as Record<string, unknown>;
     }
-    const result = await this.client.callTool({
-      name,
-      arguments: { datapack: this.datapack, ...args }
-    });
-    const textContent = Array.isArray(result.content)
-      ? result.content.find(
-          (part): part is { type: "text"; text: string } => part.type === "text"
-        )
-      : undefined;
-    if (!textContent) {
-      return result as unknown as T;
-    }
-    try {
-      return JSON.parse(textContent.text) as T;
-    } catch {
-      return textContent.text as unknown as T;
-    }
+
+    const isPromoted = raw.promoted === true || raw.tier === "shared" || fallbackTier === "shared";
+    const id = String(raw.id ?? raw.memory_id ?? `mem_${crypto.randomUUID().slice(0, 8)}`);
+    const content = String(raw.text ?? raw.memory ?? raw.content ?? "");
+    const agentId = String(raw.agent_id ?? raw.agentId ?? "unknown");
+    const ruleId =
+      typeof parsedMeta.ruleId === "string"
+        ? parsedMeta.ruleId
+        : typeof raw.rule_id === "string"
+          ? raw.rule_id
+          : undefined;
+    const tags = Array.isArray(parsedMeta.tags)
+      ? parsedMeta.tags.map(String)
+      : Array.isArray(raw.tags)
+        ? raw.tags.map(String)
+        : [];
+
+    return {
+      id,
+      content,
+      tier: isPromoted ? "shared" : "private",
+      agentId,
+      ruleId,
+      tags,
+      createdAt: String(raw.created_at ?? raw.createdAt ?? new Date().toISOString()),
+      promotedAt:
+        raw.promoted_at || raw.promotedAt
+          ? String(raw.promoted_at ?? raw.promotedAt)
+          : undefined,
+      promotedBy:
+        raw.promoted_by || raw.promotedBy
+          ? String(raw.promoted_by ?? raw.promotedBy)
+          : undefined,
+      promotionReason:
+        raw.promotion_reason || raw.promotionReason
+          ? String(raw.promotion_reason ?? raw.promotionReason)
+          : undefined
+    };
+  }
+
+  private normalizeKnowledgeDoc(raw: Record<string, unknown>, idx: number): KnowledgeDocument {
+    const filename = String(raw.filename ?? raw.title ?? raw.document_id ?? raw.id ?? `KB-${idx + 1}`);
+    const ruleMatch = filename.match(/\b(S[1-8]|ADR-\d{3})\b/i);
+    return {
+      id: String(raw.document_id ?? raw.id ?? filename.replace(/\.md$/i, "")),
+      ruleId: String(raw.ruleId ?? ruleMatch?.[1]?.toUpperCase() ?? "ADR"),
+      title: String(raw.title ?? filename),
+      content: String(raw.content ?? raw.text ?? raw.chunk ?? ""),
+      tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
+      updatedAt: String(raw.updated_at ?? raw.created_at ?? new Date().toISOString())
+    };
   }
 
   async contextSearch(options: ContextSearchOptions): Promise<ContextSearchResult> {
     this.quota.searches += 1;
     this.quota.turns += 1;
-    const raw = await this.callMcpTool<Partial<ContextSearchResult>>("context_search", {
+    const { conversationId, datapackId } = this.requireSession();
+    const raw = await this.callMcpTool<Record<string, unknown>>("context_search", {
       query: options.query,
-      agent_id: options.agentId,
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      agent_id: options.agentId ? this.formatAgentId(options.agentId) : null,
       limit: options.limit ?? 8
     });
+
+    const rawKb = Array.isArray(raw.knowledge)
+      ? raw.knowledge
+      : Array.isArray(raw.knowledge_base)
+        ? raw.knowledge_base
+        : [];
+    const rawMem = Array.isArray(raw.memories) ? raw.memories : [];
+    const rawConv = Array.isArray(raw.conversations) ? raw.conversations : [];
+    const rawSl = Array.isArray(raw.selfLearning)
+      ? raw.selfLearning
+      : Array.isArray(raw.self_learning)
+        ? raw.self_learning
+        : [];
+
     return {
       query: options.query,
-      knowledge: raw.knowledge ?? [],
-      memories: raw.memories ?? [],
-      conversations: raw.conversations ?? [],
-      selfLearning: raw.selfLearning ?? []
+      knowledge: rawKb.map((item, idx) =>
+        this.normalizeKnowledgeDoc((item ?? {}) as Record<string, unknown>, idx)
+      ),
+      memories: rawMem.map((item) =>
+        this.normalizeMemoryRecord((item ?? {}) as Record<string, unknown>)
+      ),
+      conversations: rawConv.map((item, idx) => {
+        const rec = (item ?? {}) as Record<string, unknown>;
+        return {
+          id: String(rec.id ?? `conv_${idx}`),
+          author: String(rec.agent_id ?? rec.author ?? "agent"),
+          role: "agent",
+          content: String(rec.output ?? rec.content ?? rec.text ?? ""),
+          createdAt: String(rec.created_at ?? new Date().toISOString())
+        };
+      }),
+      selfLearning: rawSl.map((item, idx) => {
+        const rec = (item ?? {}) as Record<string, unknown>;
+        return {
+          id: String(rec.id ?? `sl_${idx}`),
+          agentId: String(rec.agent_id ?? this.defaultAgentId),
+          ruleId: String(rec.rule_id ?? rec.category ?? "GENERAL"),
+          pattern: String(rec.pattern ?? rec.shortfall ?? rec.query ?? ""),
+          remediation: String(rec.remediation ?? rec.reason ?? ""),
+          outcome: "violation_recorded",
+          createdAt: String(rec.created_at ?? new Date().toISOString())
+        };
+      })
     };
   }
 
@@ -468,33 +712,106 @@ export class LiveMekoClient implements MekoClient {
     doc: KnowledgeDocument
   ): Promise<{ id: string; updated: boolean }> {
     this.quota.uploads += 1;
-    return this.callMcpTool<{ id: string; updated: boolean }>("knowledgebase_upload", {
-      document_id: doc.id,
-      title: doc.title,
-      content: doc.content,
-      tags: doc.tags
+    const { conversationId, datapackId } = this.requireSession();
+    const buf = Buffer.from(doc.content, "utf8");
+    const size = buf.byteLength;
+    const contentHash = crypto.createHash("sha256").update(buf).digest("hex");
+    const contentHeadBase64 = buf.subarray(0, 3072).toString("base64");
+    const filename = doc.id.endsWith(".md") ? doc.id : `${doc.id}.md`;
+
+    const res = await this.callMcpTool<{
+      already_uploaded?: boolean;
+      url?: string;
+      fields?: Record<string, string>;
+      key?: string;
+    }>("knowledgebase_upload_document", {
+      filename,
+      size,
+      content_hash: contentHash,
+      content_head_base64: contentHeadBase64,
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      agent_id: this.defaultAgentId
     });
+
+    if (res.already_uploaded === true || !res.url) {
+      return { id: doc.id, updated: true };
+    }
+
+    const formData = new FormData();
+    if (res.fields) {
+      for (const [key, value] of Object.entries(res.fields)) {
+        formData.append(key, String(value));
+      }
+    }
+    formData.append("file", new Blob([buf], { type: "text/markdown" }), filename);
+
+    const uploadRes = await fetch(res.url, {
+      method: "POST",
+      body: formData
+    });
+    if (!uploadRes.ok) {
+      const bodyText = await uploadRes.text().catch(() => "");
+      throw new Error(
+        `S3 upload failed for ${filename}: HTTP ${uploadRes.status}${bodyText ? ` ${bodyText}` : ""}`
+      );
+    }
+
+    return { id: doc.id, updated: false };
   }
 
   async knowledgebaseSearch(query: string, limit = 8): Promise<KnowledgeDocument[]> {
     this.quota.searches += 1;
-    const raw = await this.callMcpTool<{ results?: KnowledgeDocument[] }>(
-      "knowledgebase_search",
-      { query, limit }
-    );
-    return raw.results ?? [];
+    const { conversationId, datapackId } = this.requireSession();
+    if (!datapackId) {
+      throw new Error("datapack_id is required for live knowledgebase_search.");
+    }
+    const raw = await this.callMcpTool<
+      | Array<Record<string, unknown>>
+      | { results?: Array<Record<string, unknown>>; documents?: Array<Record<string, unknown>> }
+    >("knowledgebase_search", {
+      query,
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      limit
+    });
+    const list = Array.isArray(raw) ? raw : (raw.results ?? raw.documents ?? []);
+    return list.map((item, idx) => this.normalizeKnowledgeDoc(item, idx));
   }
 
   async memoryAdd(
     input: Omit<MemoryRecord, "id" | "tier" | "createdAt">
   ): Promise<MemoryRecord> {
     this.quota.memoryAdds += 1;
-    return this.callMcpTool<MemoryRecord>("memory_add", {
-      content: input.content,
-      agent_id: input.agentId,
-      rule_id: input.ruleId,
-      tags: input.tags
+    const { conversationId, datapackId } = this.requireSession();
+    const res = await this.callMcpTool<{
+      id?: string;
+      memory_id?: string;
+      results?: Array<{ id?: string }>;
+    }>("memory_add", {
+      text: input.content,
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      agent_id: this.formatAgentId(input.agentId),
+      metadata: JSON.stringify({
+        ruleId: input.ruleId,
+        tags: input.tags,
+        source: "standards-guard"
+      })
     });
+
+    const id =
+      res.id ?? res.memory_id ?? res.results?.[0]?.id ?? `mem_${crypto.randomUUID().slice(0, 8)}`;
+
+    return {
+      id,
+      content: input.content,
+      tier: "private",
+      agentId: input.agentId,
+      ruleId: input.ruleId,
+      tags: input.tags,
+      createdAt: new Date().toISOString()
+    };
   }
 
   async memorySearch(
@@ -502,13 +819,18 @@ export class LiveMekoClient implements MekoClient {
     options?: { tier?: "private" | "shared" | "all"; agentId?: string; limit?: number }
   ): Promise<MemoryRecord[]> {
     this.quota.searches += 1;
-    const raw = await this.callMcpTool<{ results?: MemoryRecord[] }>("memory_search", {
+    const { conversationId, datapackId } = this.requireSession();
+    const raw = await this.callMcpTool<
+      Array<Record<string, unknown>> | { results?: Array<Record<string, unknown>> }
+    >("memory_search", {
       query,
-      tier: options?.tier ?? "all",
-      agent_id: options?.agentId,
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      agent_id: options?.agentId ? this.formatAgentId(options.agentId) : null,
       limit: options?.limit ?? 8
     });
-    return raw.results ?? [];
+    const list = Array.isArray(raw) ? raw : (raw.results ?? []);
+    return list.map((item) => this.normalizeMemoryRecord(item));
   }
 
   async memoryPromote(
@@ -517,64 +839,269 @@ export class LiveMekoClient implements MekoClient {
     reason: string
   ): Promise<MemoryRecord> {
     this.quota.memoryAdds += 1;
-    return this.callMcpTool<MemoryRecord>("memory_promote", {
-      memory_id: memoryId,
-      promoted_by: promotedBy,
-      reason
+    const { conversationId, datapackId } = this.requireSession();
+    await this.callMcpTool<Record<string, unknown>>("memory_promote", {
+      conversation_id: conversationId,
+      memory_ids: [memoryId],
+      datapack_id: datapackId
     });
+
+    return {
+      id: memoryId,
+      content: `Promoted memory ${memoryId}`,
+      tier: "shared",
+      agentId: "shared",
+      tags: [],
+      createdAt: new Date().toISOString(),
+      promotedAt: new Date().toISOString(),
+      promotedBy,
+      promotionReason: reason
+    };
   }
 
   async conversationAddMessage(
     msg: Omit<ConversationMessage, "id" | "createdAt">
   ): Promise<ConversationMessage> {
     this.quota.turns += 1;
-    return this.callMcpTool<ConversationMessage>("conversation_add_message", {
+    const { conversationId, datapackId } = this.requireSession();
+    const res = await this.callMcpTool<{ id?: string; message_id?: string; created_at?: string }>(
+      "conversation_add_message",
+      {
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        agent_id: this.defaultAgentId,
+        input: `[${msg.role}] ${msg.author}`,
+        output: msg.content,
+        reasoning: msg.relatedMemoryId
+          ? `Governance audit linked to memory ${msg.relatedMemoryId}`
+          : "Standards Guard governance event",
+        metadata: JSON.stringify({
+          author: msg.author,
+          role: msg.role,
+          relatedMemoryId: msg.relatedMemoryId
+        })
+      }
+    );
+
+    return {
+      id: res.id ?? res.message_id ?? `conv_${crypto.randomUUID().slice(0, 8)}`,
       author: msg.author,
       role: msg.role,
       content: msg.content,
-      related_memory_id: msg.relatedMemoryId
-    });
+      relatedMemoryId: msg.relatedMemoryId,
+      createdAt: res.created_at ?? new Date().toISOString()
+    };
   }
 
   async artifactPut(name: string, payload: unknown): Promise<ArtifactRecord> {
     this.quota.artifacts += 1;
-    return this.callMcpTool<ArtifactRecord>("artifact_put", {
-      name,
-      content: JSON.stringify(payload)
+    const { conversationId, datapackId } = this.requireSession();
+    const canonical = canonicalStringify(payload);
+    const buf = Buffer.from(canonical, "utf8");
+    const localHash = computeContentHash(payload);
+
+    const res = await this.callMcpTool<{
+      content_hash?: string;
+      contentHash?: string;
+      created_at?: string;
+      createdAt?: string;
+    }>("artifact_put", {
+      filename: name,
+      content_base64: buf.toString("base64"),
+      content_type: "application/json",
+      conversation_id: conversationId,
+      datapack_id: datapackId,
+      agent_id: this.defaultAgentId
     });
+
+    return {
+      name,
+      contentHash: res.content_hash ?? res.contentHash ?? localHash,
+      payload,
+      createdAt: res.created_at ?? res.createdAt ?? new Date().toISOString()
+    };
   }
 
   async artifactGet(contentHash: string): Promise<ArtifactRecord | null> {
-    return this.callMcpTool<ArtifactRecord | null>("artifact_get", {
-      content_hash: contentHash
-    });
+    const { conversationId, datapackId } = this.requireSession();
+    try {
+      const res = await this.callMcpTool<Record<string, unknown> | null>("artifact_get", {
+        content_hash: contentHash,
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        agent_id: this.defaultAgentId
+      });
+      if (!res) {
+        return null;
+      }
+      let payload: unknown = res.payload ?? null;
+      if (!payload && typeof res.content_base64 === "string") {
+        const decoded = Buffer.from(res.content_base64, "base64").toString("utf8");
+        try {
+          payload = JSON.parse(decoded) as unknown;
+        } catch {
+          payload = decoded;
+        }
+      }
+      return {
+        name: String(res.filename ?? res.name ?? contentHash),
+        contentHash: String(res.content_hash ?? res.contentHash ?? contentHash),
+        payload,
+        createdAt: String(res.created_at ?? res.createdAt ?? new Date().toISOString())
+      };
+    } catch {
+      return null;
+    }
   }
 
   async selfLearningRecord(
     signal: Omit<SelfLearningSignal, "id" | "createdAt">
   ): Promise<SelfLearningSignal> {
     this.quota.turns += 1;
-    return this.callMcpTool<SelfLearningSignal>("selflearning_record", {
-      agent_id: signal.agentId,
-      rule_id: signal.ruleId,
+    const { conversationId, datapackId } = this.requireSession();
+    const res = await this.callMcpTool<{ id?: string; message_id?: string; created_at?: string }>(
+      "conversation_add_message",
+      {
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        agent_id: this.defaultAgentId,
+        input: `[self-learning:${signal.outcome}] ${signal.ruleId} by ${signal.agentId}`,
+        output: `${signal.pattern} | Remediation: ${signal.remediation}`,
+        reasoning: `Recorded ${signal.outcome} telemetry for rule ${signal.ruleId}`,
+        metadata: JSON.stringify({
+          type: "self_learning_signal",
+          ...signal
+        })
+      }
+    );
+
+    return {
+      id: res.id ?? res.message_id ?? `sl_${crypto.randomUUID().slice(0, 8)}`,
+      agentId: signal.agentId,
+      ruleId: signal.ruleId,
       pattern: signal.pattern,
       remediation: signal.remediation,
-      outcome: signal.outcome
-    });
+      outcome: signal.outcome,
+      createdAt: res.created_at ?? new Date().toISOString()
+    };
   }
 
   async getSnapshot(): Promise<DatapackSnapshot> {
-    const [knowledge, memories] = await Promise.all([
-      this.knowledgebaseSearch("*", 50),
-      this.memorySearch("*", { tier: "all", limit: 50 })
-    ]);
+    const { conversationId, datapackId } = this.requireSession();
+
+    const [describeRes, privateMemRes, sharedMemRes, convListRes, slStatusRes] =
+      await Promise.all([
+        datapackId
+          ? this.callMcpTool<Record<string, unknown>>("datapack_describe", {
+              datapack_id: datapackId,
+              include_status: true,
+              conversation_id: conversationId
+            }).catch(() => ({} as Record<string, unknown>))
+          : Promise.resolve({} as Record<string, unknown>),
+        this.callMcpTool<
+          Array<Record<string, unknown>> | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+        >("memory_get_all", {
+          conversation_id: conversationId,
+          datapack_id: datapackId,
+          promoted: false,
+          page_size: 50
+        }).catch(() => []),
+        this.callMcpTool<
+          Array<Record<string, unknown>> | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+        >("memory_get_all", {
+          conversation_id: conversationId,
+          datapack_id: datapackId,
+          promoted: true,
+          page_size: 50
+        }).catch(() => []),
+        this.callMcpTool<{ conversations?: Array<Record<string, unknown>> }>("conversation_list", {
+          conversation_id: conversationId,
+          datapack_id: datapackId,
+          limit: 20
+        }).catch(() => ({ conversations: [] })),
+        this.callMcpTool<Record<string, unknown>>("selflearning_status", {
+          conversation_id: conversationId,
+          datapack_id: datapackId
+        }).catch(() => ({} as Record<string, unknown>))
+      ]);
+
+    const kbFileCount = describeRes.knowledge_base_file_count;
+    const kbChunkCount = describeRes.knowledge_chunk_count;
+    const statusObj =
+      describeRes.status && typeof describeRes.status === "object"
+        ? (describeRes.status as Record<string, unknown>)
+        : undefined;
+    const statusKbCount = statusObj?.knowledge_base_count;
+
+    let kbCount = 0;
+    let kbLabel = "Indexed Knowledge Document";
+    if (typeof kbFileCount === "number" && kbFileCount > 0) {
+      kbCount = kbFileCount;
+    } else if (typeof kbChunkCount === "number" && kbChunkCount > 0) {
+      kbCount = kbChunkCount;
+      kbLabel = "Indexed Knowledge Chunk";
+    } else if (typeof statusKbCount === "number" && statusKbCount > 0) {
+      kbCount = statusKbCount;
+    }
+
+    const knowledge: KnowledgeDocument[] = Array.from({ length: kbCount }, (_, idx) => ({
+      id: `KB-${idx + 1}`,
+      ruleId: "ADR",
+      title: `${kbLabel} #${idx + 1}`,
+      content: "",
+      tags: ["indexed"],
+      updatedAt: new Date().toISOString()
+    }));
+
+    const extractMemList = (
+      val:
+        | Array<Record<string, unknown>>
+        | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+    ): Array<Record<string, unknown>> =>
+      Array.isArray(val) ? val : (val.memories ?? val.results ?? []);
+
+    const privateMemories = extractMemList(privateMemRes).map((m) =>
+      this.normalizeMemoryRecord(m, "private")
+    );
+    const sharedMemories = extractMemList(sharedMemRes).map((m) =>
+      this.normalizeMemoryRecord(m, "shared")
+    );
+
+    const conversations: ConversationMessage[] = (convListRes.conversations ?? []).map(
+      (c, idx) => ({
+        id: String(c.id ?? c.conversation_id ?? `conv_${idx}`),
+        author: String(c.agent_id ?? "agent"),
+        role: "agent",
+        content: String(c.title ?? c.name ?? "Conversation session"),
+        createdAt: String(c.created_at ?? new Date().toISOString())
+      })
+    );
+
+    const openFixes = Array.isArray(slStatusRes.open_fixes)
+      ? slStatusRes.open_fixes
+      : Array.isArray(slStatusRes.todos)
+        ? slStatusRes.todos
+        : [];
+    const selfLearning: SelfLearningSignal[] = openFixes.map((fix, idx) => {
+      const rec = (fix ?? {}) as Record<string, unknown>;
+      return {
+        id: String(rec.id ?? `sl_${idx}`),
+        agentId: this.defaultAgentId,
+        ruleId: String(rec.shortfall ?? rec.id ?? "GENERAL"),
+        pattern: String(rec.shortfall ?? rec.id ?? "self_learning"),
+        remediation: `Open Meko fix (${String(rec.searches ?? 0)} searches)`,
+        outcome: "violation_recorded",
+        createdAt: new Date().toISOString()
+      };
+    });
+
     return {
-      datapack: this.datapack,
+      datapack: this.resolvedDatapackName,
       knowledge,
-      memories,
-      conversations: [],
+      memories: [...privateMemories, ...sharedMemories],
+      conversations,
       artifacts: [],
-      selfLearning: []
+      selfLearning
     };
   }
 }

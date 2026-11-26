@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "meko": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@yugabytedb/meko-mcp@latest",
+        "--client",
+        "opencode",
+        "--url",
+        "https://mcp.mekodata.ai/mcp"
+      ],
+      "environment": {
+        "MEKO_API_TOKEN": "{env:MEKO_API_TOKEN}",
+        "MEKO_DATAPACK": "payledger-standards-guard"
+      }
+    },
+    "standards-guard": {
+      "type": "local",
+      "command": [
+        "node",
+        "packages/guard-cli/dist/bin.js",
+        "mcp"
+      ],
+      "environment": {
+        "GUARD_MODE": "live",
+        "MEKO_API_TOKEN": "{env:MEKO_API_TOKEN}",
+        "MEKO_MCP_URL": "https://mcp.mekodata.ai/mcp",
+        "MEKO_DATAPACK": "payledger-standards-guard"
+      }
+    }
+  }
+}
