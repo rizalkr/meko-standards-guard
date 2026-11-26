@@ -10,6 +10,10 @@ PORT=4321
 NO_UI=0
 FAST=0
 AUTO=0
+HANDSFREE=0
+TYPING_WPM=51
+TYPING_ACCURACY=86
+STEP_START_MS=0
 START_STEP=1
 ASSUME_YES=0
 LOG_PATH=""
@@ -37,6 +41,8 @@ ACTIVE_BEAT_TARGET=""
 ACTIVE_BEAT_START_MS=0
 MEM_ID=""
 RECEIPT_SHA=""
+REPORT_WRITTEN=0
+FINAL_TOTAL_MMSS=""
 
 usage() {
   cat <<'EOF'
@@ -53,7 +59,11 @@ Options:
                       (auto-refresh, adaptive menu switching, filter clicks, smooth scroll, spotlighting)
   --cdp-port <port>   Local Chrome DevTools Protocol port for --browser (default: 9222)
   --fast              Print commands immediately without simulated typing
+  --wpm <15..200>     Human typing speed in net WPM (default: 51)
+  --accuracy <50..100> Human typing accuracy percentage with realistic typos/backspace (default: 86)
   --auto              Non-interactive auto-advance (allowed in --mock mode only)
+  --handsfree         1-Enter OBS autopilot: pause once at start (and once after Beat 5),
+                      then auto-run all 5 beats with VO-paced dwell pauses (works in --mock & --live)
   --step <1..5>       Start from a specific beat (1-5, default: 1)
   --log <path>        Custom path for generated timestamp & VO cue-sheet Markdown
   --no-log            Disable writing the timestamp & VO cue-sheet file
@@ -100,8 +110,28 @@ while [[ $# -gt 0 ]]; do
       FAST=1
       shift
       ;;
+    --wpm)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --wpm requires a value." >&2
+        exit 1
+      fi
+      TYPING_WPM="$2"
+      shift 2
+      ;;
+    --accuracy)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --accuracy requires a value." >&2
+        exit 1
+      fi
+      TYPING_ACCURACY="$2"
+      shift 2
+      ;;
     --auto)
       AUTO=1
+      shift
+      ;;
+    --handsfree)
+      HANDSFREE=1
       shift
       ;;
     --step)
@@ -152,6 +182,16 @@ fi
 
 if ! [[ "$START_STEP" =~ ^[1-5]$ ]]; then
   echo "Error: Invalid --step value '$START_STEP'. Must be 1, 2, 3, 4, or 5." >&2
+  exit 1
+fi
+
+if ! [[ "$TYPING_WPM" =~ ^[0-9]+$ ]] || (( TYPING_WPM < 15 || TYPING_WPM > 200 )); then
+  echo "Error: Invalid --wpm value '$TYPING_WPM'. Must be an integer between 15 and 200." >&2
+  exit 1
+fi
+
+if ! [[ "$TYPING_ACCURACY" =~ ^[0-9]+$ ]] || (( TYPING_ACCURACY < 50 || TYPING_ACCURACY > 100 )); then
+  echo "Error: Invalid --accuracy value '$TYPING_ACCURACY'. Must be an integer between 50 and 100." >&2
   exit 1
 fi
 
@@ -212,7 +252,8 @@ end_active_beat() {
 }
 
 write_timestamp_report() {
-  if [[ "$NO_LOG" -ne 0 || "$RUN_START_MS" -eq 0 || -z "$BEAT_EVENTS" || ! -s "$BEAT_EVENTS" ]]; then
+  local quiet="${1:-0}"
+  if [[ "$REPORT_WRITTEN" -eq 1 || "$NO_LOG" -ne 0 || "$RUN_START_MS" -eq 0 || -z "$BEAT_EVENTS" || ! -s "$BEAT_EVENTS" ]]; then
     return 0
   fi
 
@@ -370,12 +411,20 @@ lines.push("");
 fs.writeFileSync(outPath, `${lines.join("\n")}`, "utf8");
 NODE
 
-  echo "[demo-runner] Saved timestamp & VO cue sheet: ${LOG_PATH} (total ${total_mmss})"
+  REPORT_WRITTEN=1
+  FINAL_TOTAL_MMSS="$total_mmss"
+  if [[ "$quiet" -eq 0 ]]; then
+    echo "[demo-runner] Saved timestamp & VO cue sheet: ${LOG_PATH} (total ${total_mmss})"
+  fi
 }
 
 cleanup() {
   local exit_code=$?
-  write_timestamp_report || true
+  if [[ "$REPORT_WRITTEN" -eq 1 && "$NO_LOG" -eq 0 ]]; then
+    echo "[demo-runner] Saved timestamp & VO cue sheet: ${LOG_PATH} (total ${FINAL_TOTAL_MMSS})"
+  else
+    write_timestamp_report 0 || true
+  fi
   if [[ -n "${BROWSER_PID}" ]] && kill -0 "${BROWSER_PID}" 2>/dev/null; then
     pkill -P "${BROWSER_PID}" 2>/dev/null || true
     kill "${BROWSER_PID}" 2>/dev/null || true
@@ -547,6 +596,193 @@ const expr = `
     return style.visibility !== "hidden" && style.display !== "none";
   }
 
+  let cursorMoves = 0;
+  let cursorClicks = 0;
+
+  function ensureCursor() {
+    let el = document.getElementById("meko-demo-cursor");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "meko-demo-cursor";
+      el.style.position = "fixed";
+      el.style.left = "0";
+      el.style.top = "0";
+      el.style.width = "24px";
+      el.style.height = "24px";
+      el.style.pointerEvents = "none";
+      el.style.zIndex = "2147483647";
+      el.style.transformOrigin = "top left";
+      el.style.transition = "opacity 180ms ease";
+      el.innerHTML =
+        '<svg viewBox="0 0 24 24" width="24" height="24" style="display:block;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45));">' +
+        '<path d="M4 3 L4 19 L9.2 14.2 L12.4 20.5 L15.1 19.2 L11.9 12.9 L18.5 12.9 Z" fill="#0f172a" stroke="#f8fafc" stroke-width="1.8" stroke-linejoin="round"/>' +
+        "</svg>";
+      (document.body || document.documentElement).appendChild(el);
+    }
+    if (!window.__mekoCursorPos) {
+      window.__mekoCursorPos = {
+        x: Math.round(window.innerWidth * 0.68),
+        y: Math.round(window.innerHeight * 0.32)
+      };
+    }
+    el.style.transform =
+      "translate3d(" +
+      Math.round(window.__mekoCursorPos.x) +
+      "px," +
+      Math.round(window.__mekoCursorPos.y) +
+      "px,0)";
+    return el;
+  }
+
+  function clickRipple(x, y) {
+    if (fast) return;
+    const ring = document.createElement("div");
+    ring.style.position = "fixed";
+    ring.style.left = Math.round(x - 13) + "px";
+    ring.style.top = Math.round(y - 13) + "px";
+    ring.style.width = "26px";
+    ring.style.height = "26px";
+    ring.style.borderRadius = "9999px";
+    ring.style.border = "2px solid rgba(56, 189, 248, 0.75)";
+    ring.style.pointerEvents = "none";
+    ring.style.zIndex = "2147483646";
+    ring.style.transform = "scale(0.35)";
+    ring.style.opacity = "0.9";
+    ring.style.transition = "transform 360ms cubic-bezier(0.22, 1, 0.36, 1), opacity 360ms ease-out";
+    (document.body || document.documentElement).appendChild(ring);
+    requestAnimationFrame(() => {
+      ring.style.transform = "scale(1.85)";
+      ring.style.opacity = "0";
+    });
+    setTimeout(() => {
+      ring.remove();
+    }, 390);
+  }
+
+  async function moveCursorTo(targetX, targetY) {
+    const cursorEl = ensureCursor();
+    const tx = Math.max(8, Math.min(window.innerWidth - 12, targetX));
+    const ty = Math.max(8, Math.min(window.innerHeight - 12, targetY));
+    const start = window.__mekoCursorPos || { x: tx, y: ty };
+    const sx = start.x;
+    const sy = start.y;
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dist = Math.hypot(dx, dy);
+
+    if (fast || dist < 4) {
+      window.__mekoCursorPos = { x: tx, y: ty };
+      cursorEl.style.transform = "translate3d(" + Math.round(tx) + "px," + Math.round(ty) + "px,0)";
+      cursorMoves += 1;
+      await sleep(15);
+      return;
+    }
+
+    const dur = Math.round(Math.min(720, Math.max(240, 175 + Math.sqrt(dist) * 19)));
+    const nx = -dy / (dist || 1);
+    const ny = dx / (dist || 1);
+    const sign = Math.random() < 0.5 ? 1 : -1;
+    const arc = Math.min(42, Math.max(12, dist * 0.14)) * sign;
+    const c1x = sx + dx * 0.3 + nx * arc;
+    const c1y = sy + dy * 0.3 + ny * arc;
+    const c2x = sx + dx * 0.72 + nx * (arc * 0.55);
+    const c2y = sy + dy * 0.72 + ny * (arc * 0.55);
+    const useOvershoot = dist > 300;
+    const overshootDist = useOvershoot ? 4 + Math.random() * 4 : 0;
+    const ux = dx / (dist || 1);
+    const uy = dy / (dist || 1);
+
+    await new Promise((resolve) => {
+      const t0 = performance.now();
+      let settled = false;
+      const safetyTimer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          window.__mekoCursorPos = { x: tx, y: ty };
+          cursorEl.style.transform = "translate3d(" + Math.round(tx) + "px," + Math.round(ty) + "px,0)";
+          resolve();
+        }
+      }, dur + 250);
+
+      function frame(now) {
+        if (settled) return;
+        const rawT = Math.min(1, (now - t0) / dur);
+        const u = rawT * rawT * (3 - 2 * rawT);
+        const inv = 1 - u;
+        let x =
+          inv * inv * inv * sx +
+          3 * inv * inv * u * c1x +
+          3 * inv * u * u * c2x +
+          u * u * u * tx;
+        let y =
+          inv * inv * inv * sy +
+          3 * inv * inv * u * c1y +
+          3 * inv * u * u * c2y +
+          u * u * u * ty;
+
+        if (useOvershoot && rawT > 0.72) {
+          const bump = Math.sin(((rawT - 0.72) / 0.28) * Math.PI);
+          x += ux * overshootDist * bump;
+          y += uy * overshootDist * bump;
+        }
+
+        cursorEl.style.transform = "translate3d(" + x.toFixed(1) + "px," + y.toFixed(1) + "px,0)";
+        if (rawT < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          settled = true;
+          clearTimeout(safetyTimer);
+          window.__mekoCursorPos = { x: tx, y: ty };
+          cursorEl.style.transform = "translate3d(" + Math.round(tx) + "px," + Math.round(ty) + "px,0)";
+          resolve();
+        }
+      }
+      requestAnimationFrame(frame);
+    });
+    cursorMoves += 1;
+  }
+
+  async function moveCursorToElement(el, offsetFracX = 0.5, offsetFracY = 0.5) {
+    if (!el) return false;
+    let rect = el.getBoundingClientRect();
+    if (rect.top < 20 || rect.bottom > window.innerHeight - 20) {
+      el.scrollIntoView({ behavior: fast ? "auto" : "smooth", block: "center" });
+      await sleep(fast ? 40 : 380);
+      rect = el.getBoundingClientRect();
+    }
+    const padX = Math.min(10, rect.width * 0.2);
+    const padY = Math.min(8, rect.height * 0.2);
+    const jx = (Math.random() - 0.5) * Math.min(14, rect.width * 0.14);
+    const jy = (Math.random() - 0.5) * Math.min(8, rect.height * 0.14);
+    const rawX = rect.left + rect.width * offsetFracX + jx;
+    const rawY = rect.top + rect.height * offsetFracY + jy;
+    const tx = Math.max(rect.left + padX, Math.min(rect.right - padX, rawX));
+    const ty = Math.max(rect.top + padY, Math.min(rect.bottom - padY, rawY));
+    await moveCursorTo(tx, ty);
+    el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: tx, clientY: ty }));
+    return true;
+  }
+
+  async function humanClick(el, prePauseMs = 95, postPauseMs = 180) {
+    if (!el) return false;
+    await moveCursorToElement(el);
+    await sleep(prePauseMs);
+    const cursorEl = ensureCursor();
+    const pos = window.__mekoCursorPos || { x: 0, y: 0 };
+    const baseTx = "translate3d(" + Math.round(pos.x) + "px," + Math.round(pos.y) + "px,0)";
+    cursorEl.style.transform = baseTx + " scale(0.86)";
+    clickRipple(pos.x, pos.y);
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: pos.x, clientY: pos.y }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: pos.x, clientY: pos.y }));
+    el.click();
+    setTimeout(() => {
+      cursorEl.style.transform = baseTx;
+    }, 75);
+    cursorClicks += 1;
+    await sleep(postPauseMs);
+    return true;
+  }
+
   function findButton(label, root = document) {
     const target = label.toLowerCase();
     const buttons = Array.from(root.querySelectorAll("button")).filter(isVisible);
@@ -561,7 +797,8 @@ const expr = `
   async function spotlight(el, holdMs = 700) {
     if (!el) return false;
     el.scrollIntoView({ behavior: fast ? "auto" : "smooth", block: "center" });
-    await sleep(fast ? 80 : 320);
+    await sleep(fast ? 50 : 280);
+    await moveCursorToElement(el, 0.42, 0.35);
     const prevShadow = el.style.boxShadow;
     const prevTransition = el.style.transition;
     el.style.transition = "box-shadow 250ms ease";
@@ -591,9 +828,7 @@ const expr = `
     await waitForLoaded();
     const btn = findButton("Refresh");
     if (!btn) return false;
-    await spotlight(btn, 220);
-    btn.click();
-    await sleep(180);
+    await humanClick(btn, 100, 200);
     await waitForLoaded();
     await sleep(250);
     return true;
@@ -610,8 +845,7 @@ const expr = `
       if (toggle && isVisible(toggle)) {
         const mobileNavBefore = Array.from(document.querySelectorAll("header + div nav")).find(isVisible);
         if (!mobileNavBefore) {
-          toggle.click();
-          await sleep(300);
+          await humanClick(toggle, 80, 320);
         }
         const mobileNav = Array.from(document.querySelectorAll("header + div nav")).find(isVisible) || document;
         btn = findButton(label, mobileNav);
@@ -623,9 +857,7 @@ const expr = `
     }
 
     if (btn) {
-      await spotlight(btn, 200);
-      btn.click();
-      await sleep(350);
+      await humanClick(btn, 110, 360);
       return { ok: true, navMode };
     }
 
@@ -654,6 +886,7 @@ const expr = `
     return null;
   }
 
+  ensureCursor();
   const currentView = new URLSearchParams(window.location.search).get("view") || "queue";
   let detail = { currentView };
 
@@ -677,14 +910,11 @@ const expr = `
     await sleep(300);
     const s2Btn = findButton("S2 · ADR-002");
     if (s2Btn) {
-      s2Btn.click();
-      await sleep(550);
+      await humanClick(s2Btn, 95, 500);
     }
     const s3Btn = findButton("S3 · ADR-003");
     if (s3Btn) {
-      await spotlight(s3Btn, 250);
-      s3Btn.click();
-      await sleep(450);
+      await humanClick(s3Btn, 95, 420);
     }
     const blastCard = await waitForCardContaining("Files (", ".rounded-lg", 3000);
     detail.highlighted = await spotlight(blastCard, 800);
@@ -703,8 +933,7 @@ const expr = `
     detail.nav = await clickNav("Cross-Agent Timeline", "timeline");
     const sharedBtn = findButton("Shared");
     if (sharedBtn) {
-      sharedBtn.click();
-      await sleep(850);
+      await humanClick(sharedBtn, 95, 720);
       const sharedCard =
         (arg1 && findCardContaining(arg1, ".divide-y > div, .p-4")) ||
         document.querySelector("main .divide-y > div");
@@ -712,15 +941,13 @@ const expr = `
     }
     const convBtn = findButton("Conversations");
     if (convBtn) {
-      convBtn.click();
-      await sleep(850);
+      await humanClick(convBtn, 95, 720);
       const convCard = document.querySelector("main .divide-y > div");
       detail.convHighlighted = await spotlight(convCard, 500);
     }
     const allBtn = findButton("All Primitives");
     if (allBtn) {
-      allBtn.click();
-      await sleep(350);
+      await humanClick(allBtn, 95, 320);
     }
     await scrollToTop();
   } else if (action === "beat4a_opencode") {
@@ -730,8 +957,7 @@ const expr = `
     }
     const slBtn = findButton("Self-Learning");
     if (slBtn) {
-      slBtn.click();
-      await sleep(450);
+      await humanClick(slBtn, 95, 420);
     }
     let card = await waitForCardContaining("opencode", ".divide-y > div, .p-4", 2500);
     detail.matchedOpencode = Boolean(card);
@@ -746,8 +972,7 @@ const expr = `
     }
     const artBtn = findButton("Artifacts");
     if (artBtn) {
-      artBtn.click();
-      await sleep(450);
+      await humanClick(artBtn, 95, 420);
     }
     let card = arg1 ? await waitForCardContaining(arg1, ".divide-y > div, .p-4", 2500) : null;
     detail.matchedReceipt = Boolean(card);
@@ -758,8 +983,15 @@ const expr = `
   } else if (action === "beat5_benchmark") {
     detail.nav = await clickNav("A/B Benchmark", "benchmark");
     await scrollToTop();
-    await sleep(500);
+    await sleep(400);
     const summaryGrid = findCardContaining("Total Rule Violations", ".grid");
+    if (summaryGrid) {
+      const kpiCards = Array.from(summaryGrid.children).filter(isVisible);
+      for (const kc of kpiCards.slice(0, 3)) {
+        await moveCursorToElement(kc, 0.5, 0.5);
+        await sleep(220);
+      }
+    }
     detail.summaryHighlighted = await spotlight(summaryGrid, 850);
     const tableEl = document.querySelector("table");
     detail.tableHighlighted = await spotlight(tableEl, 850);
@@ -767,6 +999,7 @@ const expr = `
     return { ok: false, action, error: "unknown_action" };
   }
 
+  detail.cursor = { ready: true, moves: cursorMoves, clicks: cursorClicks };
   return { ok: true, action, detail };
 })()
 `;
@@ -792,7 +1025,7 @@ async function run() {
         ws.close();
       } catch {}
       resolve();
-    }, 20000);
+    }, 30000);
 
     ws.addEventListener("open", () => {
       ws.send(
@@ -900,10 +1133,38 @@ clear_screen() {
   fi
 }
 
+mark_step_start() {
+  STEP_START_MS="$(elapsed_ms)"
+}
+
+dwell_sleep() {
+  local base_sec="$1"
+  local scale="${DEMO_DWELL_SCALE:-1}"
+  local dur
+  dur="$(awk -v b="$base_sec" -v s="$scale" 'BEGIN { v = b * s; if (v < 0) v = 0; printf "%.2f", v }')"
+  if [[ "$dur" != "0.00" ]]; then
+    sleep "$dur"
+  fi
+}
+
 wait_next() {
   local label="$1"
   local target_cum="${2:-}"
+  local target_step_sec="${3:-0}"
+  local min_hold_sec="${4:-0}"
   if [[ "$AUTO" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "$HANDSFREE" -eq 1 && "$RUN_START_MS" -gt 0 ]]; then
+    local now_el
+    now_el="$(elapsed_ms)"
+    local spent_ms=$(( now_el - STEP_START_MS ))
+    if (( spent_ms < 0 )); then
+      spent_ms=0
+    fi
+    local rem_sec
+    rem_sec="$(awk -v tgt="$target_step_sec" -v spent="$spent_ms" -v min="$min_hold_sec" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
+    dwell_sleep "$rem_sec"
     return 0
   fi
 
@@ -954,19 +1215,135 @@ print_cmd() {
     printf '$ '
   fi
 
-  if [[ "$FAST" -eq 1 || ! -t 1 ]]; then
+  if [[ "$FAST" -eq 1 || ( ! -t 1 && "${DEMO_TYPING_FORCE:-0}" != "1" ) ]]; then
     printf '%s\n' "$cmd_text"
     return 0
   fi
 
-  local i len ch
-  len=${#cmd_text}
-  for (( i = 0; i < len; i += 1 )); do
-    ch="${cmd_text:i:1}"
-    printf '%s' "$ch"
-    sleep 0.02
-  done
-  printf '\n'
+  node - "$cmd_text" "$TYPING_WPM" "$TYPING_ACCURACY" <<'NODE'
+const [cmdText, wpmStr, accStr] = process.argv.slice(2);
+const wpm = Math.max(15, Math.min(200, Number(wpmStr) || 51));
+const acc = Math.max(50, Math.min(100, Number(accStr) || 86));
+const rawScale = Number(process.env.DEMO_TYPING_SCALE ?? "1");
+const scale = Number.isFinite(rawScale) && rawScale > 0 ? Math.max(0.005, rawScale) : 1;
+
+let seed = process.env.DEMO_TYPING_SEED
+  ? (Number(process.env.DEMO_TYPING_SEED) >>> 0)
+  : ((Date.now() ^ (process.pid << 8)) >>> 0);
+if (seed === 0) seed = 0x9e3779b9;
+function rand() {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function randRange(min, max) {
+  return min + (max - min) * rand();
+}
+function bellJitter(min, max) {
+  return min + (max - min) * ((rand() + rand()) / 2);
+}
+
+const ADJACENT = {
+  a: "qwsz", b: "vghn", c: "xdfv", d: "erfcxs", e: "wsdr",
+  f: "rtgvcd", g: "tyhbvf", h: "yujnbg", i: "ujko", j: "uikmnh",
+  k: "iolmj", l: "opk", m: "njk", n: "bhjm", o: "iklp",
+  p: "ol", q: "wa", r: "edft", s: "wedxza", t: "rfgy",
+  u: "yhji", v: "cfgb", w: "qase", x: "zsdc", y: "tghu", z: "asx",
+  "0": "9op-", "1": "2q", "2": "13qw", "3": "24we", "4": "35er",
+  "5": "46rt", "6": "57ty", "7": "68yu", "8": "79ui", "9": "80io",
+  "-": "0p_", ".": ",/", "/": ".", "_": "-="
+};
+
+const targetNetMsPerChar = 60000 / (wpm * 5);
+const errorRate = Math.max(0, Math.min(0.45, (100 - acc) / 100));
+const baseCharMs = Math.max(45, targetNetMsPerChar - errorRate * 500);
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.round(ms * scale))));
+}
+
+function writeOut(str) {
+  process.stdout.write(str);
+}
+
+async function run() {
+  const chars = Array.from(cmdText);
+  let lastWasSpace = false;
+
+  for (let i = 0; i < chars.length; i += 1) {
+    const ch = chars[i];
+    const lower = ch.toLowerCase();
+    const nextCh = i + 1 < chars.length ? chars[i + 1] : "";
+    const isUpper = ch !== lower;
+    const isLowerAlpha = /^[a-z]$/.test(ch);
+    const eligible = i > 0 && /^[a-z0-9\-./_]$/.test(ch) && Boolean(ADJACENT[ch]);
+
+    if (eligible && rand() < errorRate) {
+      const modeRoll = rand();
+      if (modeRoll < 0.2 && nextCh && /^[a-z]$/.test(nextCh) && nextCh !== ch) {
+        // Transposition slip: type nextCh then ch, pause to notice, backspace twice, then type ch
+        writeOut(nextCh);
+        await waitMs(randRange(75, 130));
+        writeOut(ch);
+        await waitMs(randRange(180, 310));
+        writeOut("\b \b");
+        await waitMs(randRange(85, 135));
+        writeOut("\b \b");
+        await waitMs(randRange(70, 120));
+      } else if (modeRoll < 0.35 && isLowerAlpha) {
+        // Double-tap slip: type ch twice, pause to notice, backspace once, continue
+        writeOut(ch);
+        await waitMs(randRange(55, 95));
+        writeOut(ch);
+        await waitMs(randRange(160, 260));
+        writeOut("\b \b");
+        await waitMs(randRange(65, 115));
+        lastWasSpace = false;
+        continue;
+      } else {
+        // Adjacent QWERTY key slip (+ occasional 1-char overshoot)
+        const neighbors = ADJACENT[ch];
+        const wrong = neighbors[Math.floor(rand() * neighbors.length)] || ch;
+        writeOut(wrong);
+        let overshoot = false;
+        if (nextCh && !/\s/.test(nextCh) && rand() < 0.3) {
+          overshoot = true;
+          await waitMs(randRange(65, 125));
+          writeOut(nextCh);
+        }
+        await waitMs(randRange(180, 320));
+        if (overshoot) {
+          writeOut("\b \b");
+          await waitMs(randRange(85, 135));
+        }
+        writeOut("\b \b");
+        await waitMs(randRange(65, 120));
+      }
+    }
+
+    writeOut(ch);
+
+    let delay = baseCharMs * bellJitter(0.62, 1.42);
+    if (isUpper || /[-/.0-9_]/.test(ch)) {
+      delay += randRange(50, 130);
+    }
+    if (ch === " " && !lastWasSpace && rand() < 0.08) {
+      delay += randRange(140, 280);
+    }
+    lastWasSpace = ch === " ";
+    await waitMs(delay);
+  }
+
+  await waitMs(randRange(180, 340));
+  writeOut("\n");
+}
+
+run().catch((err) => {
+  process.stderr.write(String(err) + "\n");
+  process.exit(1);
+});
+NODE
 }
 
 record_cmd_event() {
@@ -1077,46 +1454,68 @@ fi
 if [[ "$NO_LOG" -eq 0 ]]; then
   echo "Log Out  : ${LOG_PATH}"
 fi
-echo ""
-if [[ "$OPEN_BROWSER" -eq 1 ]]; then
-  echo "Snap Terminal left (Super+Left) and Browser right (Super+Right), start OBS recording, then just press Enter at each step."
+if [[ "$FAST" -eq 1 ]]; then
+  echo "Typing   : fast (instant)"
 else
-  echo "Start OBS recording, then press Enter to clear screen and start Beat ${START_STEP}/5."
+  echo "Typing   : human (~${TYPING_WPM} WPM, ${TYPING_ACCURACY}% accuracy with realistic typos & backspace)"
 fi
-wait_next "Start Beat ${START_STEP}/5"
+if [[ "$HANDSFREE" -eq 1 ]]; then
+  echo "Pacing   : handsfree (press Enter ONCE -> auto-runs all 5 beats, target ~03:55-04:10 live)"
+fi
+echo ""
+if [[ "$HANDSFREE" -eq 1 ]]; then
+  if [[ "$OPEN_BROWSER" -eq 1 ]]; then
+    echo "Snap Terminal left (Super+Left) and Browser right (Super+Right), start OBS recording, then press Enter ONCE."
+  else
+    echo "Start OBS recording, then press Enter ONCE to run Beats ${START_STEP}-5 automatically."
+  fi
+  wait_next "Start FULL AUTO Demo (Beat ${START_STEP}/5)"
+else
+  if [[ "$OPEN_BROWSER" -eq 1 ]]; then
+    echo "Snap Terminal left (Super+Left) and Browser right (Super+Right), start OBS recording, then just press Enter at each step."
+  else
+    echo "Start OBS recording, then press Enter to clear screen and start Beat ${START_STEP}/5."
+  fi
+  wait_next "Start Beat ${START_STEP}/5"
+fi
 
 RUN_START_MS="$(now_ms)"
 
 # Beat 1 — Problem & 5-Primitive Meko Architecture
 if (( START_STEP <= 1 )); then
   begin_beat 1 "Problem & 5-Primitive Meko Architecture" "00:40"
+  mark_step_start
   clear_screen
   run_cmd 0 npm run guard:status -- "${MODE_ARGS[@]}"
   browser_action beat1_overview
-  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40"
+  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40" 26 7
   end_active_beat
 fi
 
 # Beat 2 — Pre-Implementation Spec Gate & ADR-003 Blast Radius
 if (( START_STEP <= 2 )); then
   begin_beat 2 "Pre-Implementation Spec Gate & ADR-003 Blast Radius" "00:45"
+  mark_step_start
   clear_screen
   run_cmd 1 npm run guard:spec-check -- specs/001-refunds-rfc.md "${MODE_ARGS[@]}"
   browser_action beat2a_spec
-  wait_next "Beat 2b: ADR-003 Blast Radius" "01:05"
+  wait_next "Beat 2b: ADR-003 Blast Radius" "01:05" 22 5
+  mark_step_start
   run_cmd 0 npm run guard:impact -- ADR-003
   browser_action beat2b_blast
-  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:25"
+  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:25" 18 5
   end_active_beat
 fi
 
 # Beat 3 — Agent A (Cursor) Blocked -> Queue -> Human Gate (memory_promote)
 if (( START_STEP <= 3 )); then
   begin_beat 3 "Agent A (Cursor) Blocked -> Human Gate (memory_promote)" "01:10"
+  mark_step_start
   clear_screen
   run_cmd_tee 1 "${CHECK_OUT}" npm run guard:check -- --agent cursor --files fixtures/benchmark/runs/t1-baseline-cursor.ts "${MODE_ARGS[@]}"
   MEM_ID="$(extract_mem_id_from_check "${CHECK_OUT}")"
-  wait_next "Beat 3b: Inspect Private Approval Queue" "01:50"
+  wait_next "Beat 3b: Inspect Private Approval Queue" "01:50" 26 4
+  mark_step_start
   run_cmd_tee 0 "${QUEUE_OUT}" npm run guard:queue -- "${MODE_ARGS[@]}"
   if [[ -z "${MEM_ID}" ]]; then
     MEM_ID="$(extract_mem_id_from_queue "${QUEUE_OUT}")"
@@ -1134,30 +1533,34 @@ if (( START_STEP <= 3 )); then
     fi
   fi
   browser_action beat3b_queue "${MEM_ID}"
-  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10"
+  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10" 18 4
+  mark_step_start
   run_cmd 0 npm run guard:approve -- "${MEM_ID}" --reason "Verified ADR-002/003/004 refund safeguards" --by rizal "${MODE_ARGS[@]}"
   browser_action beat3c_timeline "${MEM_ID}"
-  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35"
+  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35" 34 5
   end_active_beat
 fi
 
 # Beat 4 — Agent B (OpenCode) Vaccinated First-Try Pass & Release Gate
 if (( START_STEP <= 4 )); then
   begin_beat 4 "Agent B (OpenCode) Vaccinated First-Try Pass & Release Gate" "01:00"
+  mark_step_start
   clear_screen
   run_cmd 0 npm run guard:check -- --agent opencode --files fixtures/benchmark/runs/t1-guarded-opencode.ts --record-fix "${MODE_ARGS[@]}"
   browser_action beat4a_opencode
-  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:05"
+  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:05" 34 5
+  mark_step_start
   run_cmd_tee 0 "${RELEASE_OUT}" npm run guard:release-gate -- "${MODE_ARGS[@]}"
   RECEIPT_SHA="$(extract_receipt_sha "${RELEASE_OUT}")"
   browser_action beat4b_receipt "${RECEIPT_SHA}"
-  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35"
+  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35" 20 5
   end_active_beat
 fi
 
 # Beat 5 — A/B Benchmark Results & Offline Quickstart CTA (zero extra Meko calls)
 if (( START_STEP <= 5 )); then
   begin_beat 5 "A/B Benchmark Results & Offline Quickstart CTA" "00:45"
+  mark_step_start
   browser_action beat5_benchmark
   if [[ "$START_STEP" -eq 5 ]]; then
     clear_screen
@@ -1166,6 +1569,24 @@ if (( START_STEP <= 5 )); then
     fi
     echo "Show Benchmark UI & README.md Quickstart."
   fi
-  wait_next "Stop guard:ui and finish demo" "04:15"
-  end_active_beat
+  if [[ "$HANDSFREE" -eq 1 ]]; then
+    BEAT5_SPENT_MS=$(( $(elapsed_ms) - STEP_START_MS ))
+    if (( BEAT5_SPENT_MS < 0 )); then
+      BEAT5_SPENT_MS=0
+    fi
+    BEAT5_DWELL="$(awk -v tgt="24" -v spent="$BEAT5_SPENT_MS" -v min="18" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
+    dwell_sleep "$BEAT5_DWELL"
+    end_active_beat
+    write_timestamp_report 1
+    DONE_TS="${FINAL_TOTAL_MMSS:-$(fmt_mmss "$(elapsed_ms)")}"
+    if [[ -t 1 ]]; then
+      printf '\033[2m[%s | Demo complete. Stop OBS recording, then press Enter to close Chrome & guard:ui] \033[0m' "$DONE_TS"
+    else
+      printf '[%s | Demo complete. Stop OBS recording, then press Enter to close Chrome & guard:ui] ' "$DONE_TS"
+    fi
+    read -r _ || true
+  else
+    wait_next "Stop guard:ui and finish demo" "04:15"
+    end_active_beat
+  fi
 fi
