@@ -1,14 +1,14 @@
 [mcp_servers.meko]
-command = "npx"
-args = [
-  "-y",
-  "@yugabytedb/meko-mcp@latest",
-  "--client",
-  "codex",
-  "--url",
-  "https://mcp.mekodata.ai/mcp"
-]
+url = "https://mcp.mekodata.ai/mcp"
+bearer_token_env_var = "MEKO_API_TOKEN"
+http_headers = { "User-Agent" = "meko-mcp-installer/1.0" }
 
-[mcp_servers.meko.env]
-MEKO_API_TOKEN = "${MEKO_API_TOKEN}"
+[mcp_servers.standards-guard]
+command = "node"
+args = ["packages/guard-cli/dist/bin.js", "mcp"]
+env_vars = ["MEKO_API_TOKEN"]
+
+[mcp_servers.standards-guard.env]
+GUARD_MODE = "mock"
+MEKO_MCP_URL = "https://mcp.mekodata.ai/mcp"
 MEKO_DATAPACK = "payledger-standards-guard"

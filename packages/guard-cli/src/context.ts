@@ -88,7 +88,7 @@ function loadDotEnvIfPresent(rootDir: string): void {
       continue;
     }
     const key = line.slice(0, eqIndex).trim();
-    if (!key || process.env[key] !== undefined) {
+    if (!key || (process.env[key] !== undefined && process.env[key]!.trim().length > 0)) {
       continue;
     }
     let val = line.slice(eqIndex + 1).trim();

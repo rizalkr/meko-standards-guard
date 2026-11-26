@@ -1,18 +1,10 @@
 {
   "mcpServers": {
     "meko": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@yugabytedb/meko-mcp@latest",
-        "--client",
-        "cursor",
-        "--url",
-        "https://mcp.mekodata.ai/mcp"
-      ],
-      "env": {
-        "MEKO_API_TOKEN": "${MEKO_API_TOKEN}",
-        "MEKO_DATAPACK": "payledger-standards-guard"
+      "url": "https://mcp.mekodata.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MEKO_API_TOKEN}",
+        "User-Agent": "meko-mcp-installer/1.0"
       }
     },
     "standards-guard": {
@@ -23,7 +15,7 @@
       ],
       "env": {
         "GUARD_MODE": "live",
-        "MEKO_API_TOKEN": "${MEKO_API_TOKEN}",
+        "MEKO_API_TOKEN": "${env:MEKO_API_TOKEN}",
         "MEKO_MCP_URL": "https://mcp.mekodata.ai/mcp",
         "MEKO_DATAPACK": "payledger-standards-guard"
       }
