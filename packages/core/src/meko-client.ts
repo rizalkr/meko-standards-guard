@@ -598,16 +598,24 @@ export class LiveMekoClient implements MekoClient {
       parsedMeta = raw.metadata as Record<string, unknown>;
     }
 
-    const isPromoted = raw.promoted === true || raw.tier === "shared" || fallbackTier === "shared";
+    const isPromoted =
+      raw.promoted === true ||
+      raw.is_promoted === true ||
+      raw.scope === "shared" ||
+      raw.tier === "shared" ||
+      fallbackTier === "shared";
     const id = String(raw.id ?? raw.memory_id ?? `mem_${crypto.randomUUID().slice(0, 8)}`);
-    const content = String(raw.text ?? raw.memory ?? raw.content ?? "");
+    const content = String(raw.text ?? raw.memory ?? raw.data ?? raw.content ?? "");
     const agentId = String(raw.agent_id ?? raw.agentId ?? "unknown");
+    const contentRuleMatch = content.match(/^\[(S[1-8])\/ADR-\d{3}\]/i);
     const ruleId =
       typeof parsedMeta.ruleId === "string"
         ? parsedMeta.ruleId
         : typeof raw.rule_id === "string"
           ? raw.rule_id
-          : undefined;
+          : contentRuleMatch
+            ? contentRuleMatch[1].toUpperCase()
+            : undefined;
     const tags = Array.isArray(parsedMeta.tags)
       ? parsedMeta.tags.map(String)
       : Array.isArray(raw.tags)
@@ -638,13 +646,22 @@ export class LiveMekoClient implements MekoClient {
   }
 
   private normalizeKnowledgeDoc(raw: Record<string, unknown>, idx: number): KnowledgeDocument {
+    const content = String(raw.content ?? raw.chunk_text ?? raw.text ?? raw.chunk ?? "");
+    const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    const sectionTitle = /^Section:\s*/i.test(firstLine)
+      ? firstLine.replace(/^Section:\s*/i, "").trim()
+      : "";
     const filename = String(raw.filename ?? raw.title ?? raw.document_id ?? raw.id ?? `KB-${idx + 1}`);
-    const ruleMatch = filename.match(/\b(S[1-8]|ADR-\d{3})\b/i);
+    const matchSource = `${filename} ${sectionTitle} ${content}`;
+    const adrMatch = matchSource.match(/\b(ADR-\d{3})\b/i);
+    const ruleMatch = matchSource.match(/\b(S[1-8])\b/i);
     return {
-      id: String(raw.document_id ?? raw.id ?? filename.replace(/\.md$/i, "")),
-      ruleId: String(raw.ruleId ?? ruleMatch?.[1]?.toUpperCase() ?? "ADR"),
-      title: String(raw.title ?? filename),
-      content: String(raw.content ?? raw.text ?? raw.chunk ?? ""),
+      id: adrMatch?.[1]?.toUpperCase() ?? String(raw.document_id ?? raw.id ?? filename.replace(/\.md$/i, "")),
+      ruleId: String(
+        raw.ruleId ?? ruleMatch?.[1]?.toUpperCase() ?? adrMatch?.[1]?.toUpperCase() ?? "ADR"
+      ),
+      title: String(raw.title ?? raw.filename ?? (sectionTitle || filename)),
+      content,
       tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
       updatedAt: String(raw.updated_at ?? raw.created_at ?? new Date().toISOString())
     };
@@ -662,27 +679,70 @@ export class LiveMekoClient implements MekoClient {
       limit: options.limit ?? 8
     });
 
-    const rawKb = Array.isArray(raw.knowledge)
-      ? raw.knowledge
-      : Array.isArray(raw.knowledge_base)
-        ? raw.knowledge_base
-        : [];
-    const rawMem = Array.isArray(raw.memories) ? raw.memories : [];
-    const rawConv = Array.isArray(raw.conversations) ? raw.conversations : [];
-    const rawSl = Array.isArray(raw.selfLearning)
-      ? raw.selfLearning
-      : Array.isArray(raw.self_learning)
-        ? raw.self_learning
-        : [];
+    const container =
+      raw.results && typeof raw.results === "object" && !Array.isArray(raw.results)
+        ? (raw.results as Record<string, unknown>)
+        : raw;
+
+    const rawKb = Array.isArray(container.knowledge)
+      ? container.knowledge
+      : Array.isArray(container.knowledge_base)
+        ? container.knowledge_base
+        : Array.isArray(raw.knowledge)
+          ? raw.knowledge
+          : Array.isArray(raw.knowledge_base)
+            ? raw.knowledge_base
+            : [];
+    const rawMem = Array.isArray(container.memories)
+      ? container.memories
+      : Array.isArray(container.memory)
+        ? container.memory
+        : Array.isArray(raw.memories)
+          ? raw.memories
+          : Array.isArray(raw.memory)
+            ? raw.memory
+            : [];
+
+    const convObj =
+      container.conversation && typeof container.conversation === "object"
+        ? (container.conversation as Record<string, unknown>)
+        : undefined;
+    const rawConv = Array.isArray(container.conversations)
+      ? container.conversations
+      : Array.isArray(convObj?.hits)
+        ? convObj.hits
+        : Array.isArray(convObj?.thread)
+          ? convObj.thread
+          : Array.isArray(raw.conversations)
+            ? raw.conversations
+            : [];
+
+    const rawSl = Array.isArray(container.selfLearning)
+      ? container.selfLearning
+      : Array.isArray(container.self_learning)
+        ? container.self_learning
+        : Array.isArray(raw.selfLearning)
+          ? raw.selfLearning
+          : Array.isArray(raw.self_learning)
+            ? raw.self_learning
+            : [];
+
+    const formattedRequestAgent = options.agentId ? this.formatAgentId(options.agentId) : null;
 
     return {
       query: options.query,
       knowledge: rawKb.map((item, idx) =>
         this.normalizeKnowledgeDoc((item ?? {}) as Record<string, unknown>, idx)
       ),
-      memories: rawMem.map((item) =>
-        this.normalizeMemoryRecord((item ?? {}) as Record<string, unknown>)
-      ),
+      memories: rawMem.map((item) => {
+        const rec = (item ?? {}) as Record<string, unknown>;
+        const itemAgent = typeof rec.agent_id === "string" ? rec.agent_id : undefined;
+        const fallbackTier =
+          formattedRequestAgent && itemAgent && itemAgent !== formattedRequestAgent
+            ? "shared"
+            : "private";
+        return this.normalizeMemoryRecord(rec, fallbackTier);
+      }),
       conversations: rawConv.map((item, idx) => {
         const rec = (item ?? {}) as Record<string, unknown>;
         return {
