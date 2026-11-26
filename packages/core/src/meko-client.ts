@@ -671,13 +671,33 @@ export class LiveMekoClient implements MekoClient {
     this.quota.searches += 1;
     this.quota.turns += 1;
     const { conversationId, datapackId } = this.requireSession();
-    const raw = await this.callMcpTool<Record<string, unknown>>("context_search", {
-      query: options.query,
-      conversation_id: conversationId,
-      datapack_id: datapackId,
-      agent_id: options.agentId ? this.formatAgentId(options.agentId) : null,
-      limit: options.limit ?? 8
-    });
+    const [raw, promotedMemRes] = await Promise.all([
+      this.callMcpTool<Record<string, unknown>>("context_search", {
+        query: options.query,
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        agent_id: options.agentId ? this.formatAgentId(options.agentId) : null,
+        limit: options.limit ?? 8
+      }),
+      this.callMcpTool<
+        | Array<Record<string, unknown>>
+        | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+      >("memory_get_all", {
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        promoted: true,
+        page_size: 100
+      }).catch(() => [])
+    ]);
+
+    const promotedList = Array.isArray(promotedMemRes)
+      ? promotedMemRes
+      : (promotedMemRes.memories ?? promotedMemRes.results ?? []);
+    const promotedIds = new Set(
+      promotedList
+        .map((m) => String(m.id ?? m.memory_id ?? ""))
+        .filter((id) => id.length > 0)
+    );
 
     const container =
       raw.results && typeof raw.results === "object" && !Array.isArray(raw.results)
@@ -727,22 +747,44 @@ export class LiveMekoClient implements MekoClient {
             ? raw.self_learning
             : [];
 
-    const formattedRequestAgent = options.agentId ? this.formatAgentId(options.agentId) : null;
+    let knowledge = rawKb.map((item, idx) =>
+      this.normalizeKnowledgeDoc((item ?? {}) as Record<string, unknown>, idx)
+    );
+    if (knowledge.length === 0 && datapackId) {
+      knowledge = await this.knowledgebaseSearch(
+        options.query,
+        Math.min(options.limit ?? 8, 5)
+      ).catch(() => []);
+    }
+
+    const formattedIncludePrivate = options.includePrivateForAgent
+      ? this.formatAgentId(options.includePrivateForAgent)
+      : null;
+
+    const memories = rawMem
+      .map((item) => {
+        const rec = (item ?? {}) as Record<string, unknown>;
+        const id = String(rec.id ?? rec.memory_id ?? "");
+        const fallbackTier = promotedIds.has(id) ? "shared" : "private";
+        return this.normalizeMemoryRecord(rec, fallbackTier);
+      })
+      .filter((mem) => {
+        if (mem.tier === "shared") {
+          return true;
+        }
+        if (!options.includePrivateForAgent) {
+          return false;
+        }
+        return (
+          mem.agentId === options.includePrivateForAgent ||
+          mem.agentId === formattedIncludePrivate
+        );
+      });
 
     return {
       query: options.query,
-      knowledge: rawKb.map((item, idx) =>
-        this.normalizeKnowledgeDoc((item ?? {}) as Record<string, unknown>, idx)
-      ),
-      memories: rawMem.map((item) => {
-        const rec = (item ?? {}) as Record<string, unknown>;
-        const itemAgent = typeof rec.agent_id === "string" ? rec.agent_id : undefined;
-        const fallbackTier =
-          formattedRequestAgent && itemAgent && itemAgent !== formattedRequestAgent
-            ? "shared"
-            : "private";
-        return this.normalizeMemoryRecord(rec, fallbackTier);
-      }),
+      knowledge,
+      memories,
       conversations: rawConv.map((item, idx) => {
         const rec = (item ?? {}) as Record<string, unknown>;
         return {
@@ -828,14 +870,20 @@ export class LiveMekoClient implements MekoClient {
     }
     const raw = await this.callMcpTool<
       | Array<Record<string, unknown>>
-      | { results?: Array<Record<string, unknown>>; documents?: Array<Record<string, unknown>> }
+      | {
+          results?: Array<Record<string, unknown>>;
+          chunks?: Array<Record<string, unknown>>;
+          documents?: Array<Record<string, unknown>>;
+        }
     >("knowledgebase_search", {
       query,
       conversation_id: conversationId,
       datapack_id: datapackId,
       limit
     });
-    const list = Array.isArray(raw) ? raw : (raw.results ?? raw.documents ?? []);
+    const list = Array.isArray(raw)
+      ? raw
+      : (raw.results ?? raw.chunks ?? raw.documents ?? []);
     return list.map((item, idx) => this.normalizeKnowledgeDoc(item, idx));
   }
 
