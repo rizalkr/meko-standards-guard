@@ -9,8 +9,8 @@
     "node": ">=20.18.0"
   },
   "scripts": {
-    "build": "npm run build -w @meko-guard/core && npm run build -w @meko-guard/engine && npm run build -w @meko-guard/payledger && npm run build -w @meko-guard/cli",
-    "typecheck": "npm run typecheck -w @meko-guard/core && npm run typecheck -w @meko-guard/engine && npm run typecheck -w @meko-guard/payledger && npm run typecheck -w @meko-guard/cli",
+    "build": "npm run build -w @meko-guard/core && npm run build -w @meko-guard/engine && npm run build -w @meko-guard/payledger && npm run build -w @meko-guard/cli && npm run build -w @meko-guard/ui",
+    "typecheck": "npm run typecheck -w @meko-guard/core && npm run typecheck -w @meko-guard/engine && npm run typecheck -w @meko-guard/payledger && npm run typecheck -w @meko-guard/cli && npm run typecheck -w @meko-guard/ui",
     "test": "vitest run",
     "guard:seed": "tsx packages/guard-cli/src/bin.ts seed",
     "guard:status": "tsx packages/guard-cli/src/bin.ts status",
@@ -20,7 +20,8 @@
     "guard:approve": "tsx packages/guard-cli/src/bin.ts approve",
     "guard:impact": "tsx packages/guard-cli/src/bin.ts impact",
     "guard:release-gate": "tsx packages/guard-cli/src/bin.ts release-gate",
-    "guard:mcp": "tsx packages/guard-cli/src/bin.ts mcp"
+    "guard:mcp": "tsx packages/guard-cli/src/bin.ts mcp",
+    "guard:ui": "tsx packages/guard-ui/server/index.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
