@@ -747,21 +747,58 @@ export class LiveMekoClient implements MekoClient {
             ? raw.self_learning
             : [];
 
-    let knowledge = rawKb.map((item, idx) =>
-      this.normalizeKnowledgeDoc((item ?? {}) as Record<string, unknown>, idx)
-    );
-    if (knowledge.length === 0 && datapackId) {
-      knowledge = await this.knowledgebaseSearch(
-        options.query,
-        Math.min(options.limit ?? 8, 5)
-      ).catch(() => []);
+    let effectiveKbRaw = rawKb;
+    if (effectiveKbRaw.length === 0 && datapackId) {
+      this.quota.searches += 1;
+      const kbRaw = await this.callMcpTool<
+        | Array<Record<string, unknown>>
+        | {
+            results?: Array<Record<string, unknown>>;
+            chunks?: Array<Record<string, unknown>>;
+            documents?: Array<Record<string, unknown>>;
+          }
+      >("knowledgebase_search", {
+        query: options.query,
+        conversation_id: conversationId,
+        datapack_id: datapackId,
+        limit: Math.min(options.limit ?? 8, 8)
+      }).catch(() => []);
+      effectiveKbRaw = Array.isArray(kbRaw)
+        ? kbRaw
+        : (kbRaw.results ?? kbRaw.chunks ?? kbRaw.documents ?? []);
+    }
+
+    const knowledge: KnowledgeDocument[] = [];
+    const promotedKbMemories: MemoryRecord[] = [];
+    for (let idx = 0; idx < effectiveKbRaw.length; idx += 1) {
+      const rec = (effectiveKbRaw[idx] ?? {}) as Record<string, unknown>;
+      const metaFilters =
+        rec.metadata_filters && typeof rec.metadata_filters === "object"
+          ? (rec.metadata_filters as Record<string, unknown>)
+          : null;
+      if (metaFilters?.source === "memory") {
+        promotedKbMemories.push(
+          this.normalizeMemoryRecord(
+            {
+              id: metaFilters.memory_id ?? rec.id,
+              text: rec.chunk_text ?? rec.content ?? rec.text ?? "",
+              agent_id: metaFilters.agent_id ?? "shared",
+              promoted: true,
+              created_at: rec.created_at
+            },
+            "shared"
+          )
+        );
+      } else {
+        knowledge.push(this.normalizeKnowledgeDoc(rec, idx));
+      }
     }
 
     const formattedIncludePrivate = options.includePrivateForAgent
       ? this.formatAgentId(options.includePrivateForAgent)
       : null;
 
-    const memories = rawMem
+    const directMemories = rawMem
       .map((item) => {
         const rec = (item ?? {}) as Record<string, unknown>;
         const id = String(rec.id ?? rec.memory_id ?? "");
@@ -780,6 +817,15 @@ export class LiveMekoClient implements MekoClient {
           mem.agentId === formattedIncludePrivate
         );
       });
+
+    const seenMemoryIds = new Set<string>();
+    const memories: MemoryRecord[] = [];
+    for (const mem of [...promotedKbMemories, ...directMemories]) {
+      if (!seenMemoryIds.has(mem.id)) {
+        seenMemoryIds.add(mem.id);
+        memories.push(mem);
+      }
+    }
 
     return {
       query: options.query,
