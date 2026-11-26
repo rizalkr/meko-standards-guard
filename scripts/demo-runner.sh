@@ -11,6 +11,11 @@ NO_UI=0
 FAST=0
 AUTO=0
 HANDSFREE=0
+SKIP_AGENT_MCP=0
+SKIP_AGENT_PROMPTS=0
+OPENCODE_MODEL="${DEMO_OPENCODE_MODEL:-deepseek/deepseek-flash}"
+AGENT_TIMEOUT="${DEMO_AGENT_TIMEOUT:-28}"
+CURSOR_LOGGED_IN=0
 TYPING_WPM=51
 TYPING_ACCURACY=86
 STEP_START_MS=0
@@ -22,6 +27,8 @@ OPEN_BROWSER=0
 CDP_PORT=9222
 
 UI_PID=""
+CURSOR_AGENT_BIN=""
+OPENCODE_BIN=""
 BROWSER_BIN=""
 BROWSER_PID=""
 CHROME_PROFILE_DIR=""
@@ -55,6 +62,8 @@ Options:
   --live              Live Meko mode (syncs CLI and guard:ui --mode live on the same datapack)
   --port <port>       Port for guard:ui server (default: 4321)
   --no-ui             Skip launching background guard:ui server
+  --no-agent-mcp      Skip live cursor-agent / opencode MCP verification in Beat 1
+  --no-agent-prompts  Skip live cursor-agent -p / opencode run MCP prompts in Beats 3-4
   --browser           Open clean Chrome window and run full CDP UI choreography
                       (auto-refresh, adaptive menu switching, filter clicks, smooth scroll, spotlighting)
   --cdp-port <port>   Local Chrome DevTools Protocol port for --browser (default: 9222)
@@ -92,6 +101,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-ui)
       NO_UI=1
+      shift
+      ;;
+    --no-agent-mcp)
+      SKIP_AGENT_MCP=1
+      shift
+      ;;
+    --no-agent-prompts)
+      SKIP_AGENT_PROMPTS=1
       shift
       ;;
     --browser)
@@ -192,6 +209,11 @@ fi
 
 if ! [[ "$TYPING_ACCURACY" =~ ^[0-9]+$ ]] || (( TYPING_ACCURACY < 50 || TYPING_ACCURACY > 100 )); then
   echo "Error: Invalid --accuracy value '$TYPING_ACCURACY'. Must be an integer between 50 and 100." >&2
+  exit 1
+fi
+
+if ! [[ "$AGENT_TIMEOUT" =~ ^[0-9]+$ ]] || (( AGENT_TIMEOUT < 5 || AGENT_TIMEOUT > 120 )); then
+  echo "Error: Invalid DEMO_AGENT_TIMEOUT value '$AGENT_TIMEOUT'. Must be an integer between 5 and 120." >&2
   exit 1
 fi
 
@@ -303,10 +325,10 @@ function fmtSrt(ms) {
 }
 
 const VO_CUES = {
-  "1": "AI coding agents start every session from zero. Standards memorized in Cursor never reach OpenCode or Claude Code, prose ADR files get ignored under long context, and letting agents write directly into shared memory risks context poisoning. Meko Standards Guard solves this with one YugabyteDB Meko datapack (`payledger-standards-guard`) using all five Meko primitives: Knowledge Base for 8 financial ADRs (`S1`–`S8`), 2-tier Private and Shared Memory for human-gated learnings, Conversations for audit logs, Content-Addressed Artifacts for release receipts, and Self-Learning signals.",
+  "1": "AI coding agents start every session from zero. Standards memorized in Cursor never reach OpenCode or Claude Code, prose ADR files get ignored under long context, and letting agents write directly into shared memory risks context poisoning. Meko Standards Guard solves this with one YugabyteDB Meko datapack (`payledger-standards-guard`) wired live over MCP to both Cursor and OpenCode—combining all five Meko primitives: Knowledge Base for 8 financial ADRs (`S1`–`S8`), 2-tier Private and Shared Memory for human-gated learnings, Conversations for audit logs, Content-Addressed Artifacts for release receipts, and Self-Learning signals.",
   "2": "Before writing a single line of code, `standards-guard spec-check` checks our draft refunds RFC against Meko ADRs and catches three invariant conflicts immediately—optional idempotency, mutating append-only `ledger_entries`, and returning raw merchant PII. `standards-guard impact ADR-003` shows the exact files, routes, and Vitest invariants in its blast radius.",
-  "3": "When Cursor ignores the spec and writes a naive `POST /refunds` handler, our `ts-morph` AST and PII taint engine blocks it deterministically: missing idempotency (`S2`), float fee math (`S1`), direct `db.update(ledgerEntries)` (`S3`), and raw merchant PII in `c.json` (`S4`). Crucially, Standards Guard quarantines these findings in Cursor's private Meko memory (`memory_add`) so an unreviewed agent cannot poison team context. A human maintainer reviews the queue and runs `approve`, calling `memory_promote` and logging an audit message to Meko Conversations.",
-  "4": "Now a fresh OpenCode session starts with zero chat history. Querying Meko via MCP returns the exact ADR chunk plus the newly promoted lesson. OpenCode implements `POST /refunds` using `requireIdempotency`, `multiplyBpsBankers`, `reverseLedgerGroup`, and `toPublicMerchantDto`—passing `guard check` on its very first try. Running `standards-guard release-gate` verifies all AST and SQLite ledger invariants and emits a SHA-256 compliance receipt artifact directly into Meko.",
+  "3": "When Cursor ignores the spec and writes a naive `POST /refunds` handler, our `ts-morph` AST and PII taint engine blocks it deterministically: missing idempotency (`S2`), float fee math (`S1`), direct `db.update(ledgerEntries)` (`S3`), and raw merchant PII in `c.json` (`S4`). Crucially, Standards Guard quarantines these findings in Cursor's private Meko memory (`memory_add`) so an unreviewed agent cannot poison team context. Cursor inspects the pending items via `guard_queue_list` over MCP—confirming agents cannot self-promote under `ADR-008`—before a human maintainer runs `approve`, calling `memory_promote` and logging an audit message to Meko Conversations.",
+  "4": "Now a fresh OpenCode session starts with zero chat history. Running `opencode run` calls `guard_preflight` over MCP and immediately receives the exact ADR chunk plus the newly promoted lesson. OpenCode implements `POST /refunds` using `requireIdempotency`, `multiplyBpsBankers`, `reverseLedgerGroup`, and `toPublicMerchantDto`—passing `guard check` on its very first try. Running `standards-guard release-gate` verifies all AST and SQLite ledger invariants and emits a SHA-256 compliance receipt artifact directly into Meko.",
   "5": "Across five representative PayLedger endpoints measured with `tiktoken`, replacing full-ADR prompting and retry loops with targeted Meko retrieval cut rule violations from 15 to zero, eliminated correction turns from 1.8 to zero, and reduced prompt tokens from 9,725 to 1,089—an 88.8% reduction. Every agent config, ADR, and test suite is open-source and runs offline in zero-key `--mode mock` with one command. One Meko datapack, every coding agent, zero drift."
 };
 
@@ -443,6 +465,37 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+load_dotenv_exports() {
+  local env_file="${REPO_ROOT}/.env"
+  [[ -f "$env_file" ]] || return 0
+  local line key val
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[2]}"
+    case "$key" in
+      MEKO_API_TOKEN|MEKO_MCP_URL|MEKO_DATAPACK) ;;
+      *) continue ;;
+    esac
+    if [[ -n "${!key:-}" ]]; then
+      continue
+    fi
+    val="${BASH_REMATCH[3]}"
+    if [[ "$val" =~ ^\"([^\"]*)\"[[:space:]]*(#.*)?$ ]]; then
+      val="${BASH_REMATCH[1]}"
+    elif [[ "$val" =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then
+      val="${BASH_REMATCH[1]}"
+    else
+      val="${val%%#*}"
+      val="$(printf '%s' "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    fi
+    if [[ -n "$val" ]]; then
+      export "$key=$val"
+    fi
+  done < "$env_file"
+}
+
 has_live_token() {
   if [[ -n "${MEKO_API_TOKEN:-}" ]]; then
     return 0
@@ -465,6 +518,31 @@ has_live_token() {
   fi
   return 1
 }
+
+load_dotenv_exports
+
+if [[ "$SKIP_AGENT_MCP" -eq 0 ]]; then
+  CURSOR_AGENT_BIN="$(command -v cursor-agent 2>/dev/null || true)"
+  OPENCODE_BIN="$(command -v opencode 2>/dev/null || true)"
+  if [[ -n "$CURSOR_AGENT_BIN" && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+      cursor_status_out="$(timeout 5s "$CURSOR_AGENT_BIN" status 2>&1 || true)"
+    else
+      cursor_status_out="$("$CURSOR_AGENT_BIN" status 2>&1 || true)"
+    fi
+    if [[ -n "$cursor_status_out" ]] && ! printf '%s\n' "$cursor_status_out" | grep -iq "not logged in"; then
+      CURSOR_LOGGED_IN=1
+    fi
+  fi
+  if [[ -n "$OPENCODE_BIN" ]] && has_live_token; then
+    opencode_mcp_status="$("$OPENCODE_BIN" mcp list 2>/dev/null || true)"
+    if ! printf '%s\n' "$opencode_mcp_status" | grep -Eq 'meko[[:space:]]+connected' || \
+       ! printf '%s\n' "$opencode_mcp_status" | grep -Eq 'standards-guard[[:space:]]+connected'; then
+      "$OPENCODE_BIN" service restart >/dev/null 2>&1 || true
+      sleep 2
+    fi
+  fi
+fi
 
 if [[ "$MODE" == "live" ]]; then
   if ! has_live_token; then
@@ -1376,6 +1454,46 @@ run_cmd() {
   fi
 }
 
+run_cmd_timeout() {
+  local allow_fail="$1"
+  local timeout_sec="$2"
+  shift 2
+  local display
+  display="$(format_cmd_display "$@")"
+  print_cmd "$display"
+  local cmd_start_ms
+  cmd_start_ms="$(elapsed_ms)"
+  local rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    if timeout "${timeout_sec}s" "$@"; then
+      rc=0
+    else
+      rc=$?
+    fi
+  else
+    if "$@"; then
+      rc=0
+    else
+      rc=$?
+    fi
+  fi
+  record_cmd_event "$cmd_start_ms" "$(elapsed_ms)" "$display"
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$rc" -eq 124 ]]; then
+    if [[ -t 1 ]]; then
+      printf '\033[2m[demo-runner] agent prompt timed out after %ss — continuing\033[0m\n' "$timeout_sec"
+    else
+      echo "[demo-runner] agent prompt timed out after ${timeout_sec}s — continuing"
+    fi
+  fi
+  if [[ "$allow_fail" -eq 1 ]]; then
+    return 0
+  fi
+  return "$rc"
+}
+
 run_cmd_tee() {
   local allow_fail="$1"
   local out_file="$2"
@@ -1440,6 +1558,45 @@ if [[ "$NO_UI" -eq 0 ]]; then
 else
   echo "guard:ui : skipped (--no-ui)"
 fi
+if [[ "$SKIP_AGENT_MCP" -eq 1 ]]; then
+  echo "Agent MCP: skipped (--no-agent-mcp)"
+else
+  AGENT_MCP_PARTS=()
+  if [[ -n "$CURSOR_AGENT_BIN" ]] && has_live_token; then
+    AGENT_MCP_PARTS+=("cursor-agent")
+  fi
+  if [[ -n "$OPENCODE_BIN" ]]; then
+    AGENT_MCP_PARTS+=("opencode")
+  fi
+  if [[ "${#AGENT_MCP_PARTS[@]}" -gt 0 ]]; then
+    AGENT_MCP_JOINED="${AGENT_MCP_PARTS[0]}"
+    for ((i = 1; i < ${#AGENT_MCP_PARTS[@]}; i++)); do
+      AGENT_MCP_JOINED+=" + ${AGENT_MCP_PARTS[$i]}"
+    done
+    echo "Agent MCP: ${AGENT_MCP_JOINED} (zero-quota MCP handshake in Beat 1)"
+  else
+    echo "Agent MCP: none detected (or missing MEKO_API_TOKEN for cursor-agent)"
+  fi
+fi
+if [[ "$SKIP_AGENT_MCP" -eq 1 || "$SKIP_AGENT_PROMPTS" -eq 1 ]]; then
+  echo "Agent Run: skipped"
+else
+  if [[ "$MODE" == "mock" ]]; then
+    if [[ "$CURSOR_LOGGED_IN" -eq 1 ]]; then
+      CURSOR_LOGIN_LABEL="logged in"
+    else
+      CURSOR_LOGIN_LABEL="NOT logged in — run 'cursor-agent login'"
+    fi
+    echo "Agent Run: mock-skipped (0 quota; in --live: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL}, timeout ${AGENT_TIMEOUT}s)"
+  else
+    if [[ "$CURSOR_LOGGED_IN" -eq 1 ]]; then
+      CURSOR_LOGIN_LABEL="logged in"
+    else
+      CURSOR_LOGIN_LABEL="NOT logged in — Beat 3 prompt will be skipped"
+    fi
+    echo "Agent Run: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL} (timeout ${AGENT_TIMEOUT}s)"
+  fi
+fi
 if [[ "$OPEN_BROWSER" -eq 1 ]]; then
   echo "Browser  : ${BROWSER_BIN} (hands-free CDP choreography on port ${CDP_PORT}, initial ?view=${INIT_VIEW})"
 else
@@ -1488,7 +1645,16 @@ if (( START_STEP <= 1 )); then
   clear_screen
   run_cmd 0 npm run guard:status -- "${MODE_ARGS[@]}"
   browser_action beat1_overview
-  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40" 26 7
+  if [[ "$SKIP_AGENT_MCP" -eq 0 ]]; then
+    if [[ -n "$CURSOR_AGENT_BIN" ]] && has_live_token; then
+      run_cmd 1 cursor-agent mcp list
+      run_cmd 1 cursor-agent mcp list-tools standards-guard
+    fi
+    if [[ -n "$OPENCODE_BIN" ]]; then
+      run_cmd 1 opencode mcp list
+    fi
+  fi
+  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40" 36 4
   end_active_beat
 fi
 
@@ -1499,11 +1665,11 @@ if (( START_STEP <= 2 )); then
   clear_screen
   run_cmd 1 npm run guard:spec-check -- specs/001-refunds-rfc.md "${MODE_ARGS[@]}"
   browser_action beat2a_spec
-  wait_next "Beat 2b: ADR-003 Blast Radius" "01:05" 22 5
+  wait_next "Beat 2b: ADR-003 Blast Radius" "01:00" 18 4
   mark_step_start
   run_cmd 0 npm run guard:impact -- ADR-003
   browser_action beat2b_blast
-  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:25" 18 5
+  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:15" 15 4
   end_active_beat
 fi
 
@@ -1514,7 +1680,7 @@ if (( START_STEP <= 3 )); then
   clear_screen
   run_cmd_tee 1 "${CHECK_OUT}" npm run guard:check -- --agent cursor --files fixtures/benchmark/runs/t1-baseline-cursor.ts "${MODE_ARGS[@]}"
   MEM_ID="$(extract_mem_id_from_check "${CHECK_OUT}")"
-  wait_next "Beat 3b: Inspect Private Approval Queue" "01:50" 26 4
+  wait_next "Beat 3b: Inspect Private Approval Queue" "01:40" 22 4
   mark_step_start
   run_cmd_tee 0 "${QUEUE_OUT}" npm run guard:queue -- "${MODE_ARGS[@]}"
   if [[ -z "${MEM_ID}" ]]; then
@@ -1533,11 +1699,30 @@ if (( START_STEP <= 3 )); then
     fi
   fi
   browser_action beat3b_queue "${MEM_ID}"
-  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10" 18 4
+  if [[ "$SKIP_AGENT_MCP" -eq 0 && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
+    if [[ "$MODE" == "live" ]]; then
+      if [[ -n "$CURSOR_AGENT_BIN" && "$CURSOR_LOGGED_IN" -eq 1 ]] && has_live_token; then
+        run_cmd_timeout 1 "$AGENT_TIMEOUT" cursor-agent -p --mode ask --approve-mcps --trust "Use standards-guard guard_queue_list and summarize the pending private memories in 2 concise bullets (confirm agents cannot self-promote)."
+      elif [[ -n "$CURSOR_AGENT_BIN" ]]; then
+        if [[ -t 1 ]]; then
+          printf '\033[2m[demo-runner] Skipping live cursor-agent prompt (not logged in; run '\''cursor-agent login'\'').\033[0m\n'
+        else
+          echo "[demo-runner] Skipping live cursor-agent prompt (not logged in; run 'cursor-agent login')."
+        fi
+      fi
+    else
+      if [[ -t 1 ]]; then
+        printf '\033[2m[mock mode] Skipping live cursor-agent MCP prompt (0 quota; runs automatically in --live).\033[0m\n'
+      else
+        echo "[mock mode] Skipping live cursor-agent MCP prompt (0 quota; runs automatically in --live)."
+      fi
+    fi
+  fi
+  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10" 26 4
   mark_step_start
   run_cmd 0 npm run guard:approve -- "${MEM_ID}" --reason "Verified ADR-002/003/004 refund safeguards" --by rizal "${MODE_ARGS[@]}"
   browser_action beat3c_timeline "${MEM_ID}"
-  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35" 34 5
+  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35" 24 4
   end_active_beat
 fi
 
@@ -1546,14 +1731,27 @@ if (( START_STEP <= 4 )); then
   begin_beat 4 "Agent B (OpenCode) Vaccinated First-Try Pass & Release Gate" "01:00"
   mark_step_start
   clear_screen
+  if [[ "$SKIP_AGENT_MCP" -eq 0 && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
+    if [[ "$MODE" == "live" ]]; then
+      if [[ -n "$OPENCODE_BIN" ]] && has_live_token; then
+        run_cmd_timeout 1 "$AGENT_TIMEOUT" opencode run --auto -m "$OPENCODE_MODEL" "Use standards-guard guard_preflight for POST /refunds and list the top ADR and promoted shared-memory rules in 3 concise bullets."
+      fi
+    else
+      if [[ -t 1 ]]; then
+        printf '\033[2m[mock mode] Skipping live opencode run MCP prompt (0 quota; runs automatically in --live).\033[0m\n'
+      else
+        echo "[mock mode] Skipping live opencode run MCP prompt (0 quota; runs automatically in --live)."
+      fi
+    fi
+  fi
   run_cmd 0 npm run guard:check -- --agent opencode --files fixtures/benchmark/runs/t1-guarded-opencode.ts --record-fix "${MODE_ARGS[@]}"
   browser_action beat4a_opencode
-  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:05" 34 5
+  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:15" 36 4
   mark_step_start
   run_cmd_tee 0 "${RELEASE_OUT}" npm run guard:release-gate -- "${MODE_ARGS[@]}"
   RECEIPT_SHA="$(extract_receipt_sha "${RELEASE_OUT}")"
   browser_action beat4b_receipt "${RECEIPT_SHA}"
-  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35" 20 5
+  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35" 18 4
   end_active_beat
 fi
 
@@ -1574,7 +1772,7 @@ if (( START_STEP <= 5 )); then
     if (( BEAT5_SPENT_MS < 0 )); then
       BEAT5_SPENT_MS=0
     fi
-    BEAT5_DWELL="$(awk -v tgt="24" -v spent="$BEAT5_SPENT_MS" -v min="18" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
+    BEAT5_DWELL="$(awk -v tgt="20" -v spent="$BEAT5_SPENT_MS" -v min="14" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
     dwell_sleep "$BEAT5_DWELL"
     end_active_beat
     write_timestamp_report 1
