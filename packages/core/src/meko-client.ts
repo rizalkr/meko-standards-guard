@@ -51,9 +51,87 @@ export interface CreateMekoClientOptions {
   mode: GuardMode;
   datapack: string;
   fixturePath?: string;
+  stateFilePath?: string;
   mcpUrl?: string;
   apiToken?: string;
   recordingDir?: string;
+}
+
+export interface LiveEventLedger {
+  artifacts: ArtifactRecord[];
+  selfLearning: SelfLearningSignal[];
+  conversations: ConversationMessage[];
+}
+
+const MAX_LEDGER_ITEMS = 50;
+
+function emptyLiveEventLedger(): LiveEventLedger {
+  return {
+    artifacts: [],
+    selfLearning: [],
+    conversations: []
+  };
+}
+
+function mergeByKey<T>(existing: T[], incoming: T[], getKey: (item: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const item of existing) {
+    byKey.set(getKey(item), item);
+  }
+  for (const item of incoming) {
+    byKey.set(getKey(item), item);
+  }
+  const merged = Array.from(byKey.values());
+  return merged.length > MAX_LEDGER_ITEMS ? merged.slice(-MAX_LEDGER_ITEMS) : merged;
+}
+
+/**
+ * Reads the local ledger of live-confirmed Meko MCP writes (best-effort, empty if absent).
+ */
+export function readLiveEventLedger(filePath?: string): LiveEventLedger {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return emptyLiveEventLedger();
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<LiveEventLedger>;
+    return {
+      artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
+      selfLearning: Array.isArray(parsed.selfLearning) ? parsed.selfLearning : [],
+      conversations: Array.isArray(parsed.conversations) ? parsed.conversations : []
+    };
+  } catch {
+    return emptyLiveEventLedger();
+  }
+}
+
+/**
+ * Persists newly confirmed live Meko events into the local state ledger with deduplication.
+ */
+export function recordLiveEventLedger(
+  filePath: string | undefined,
+  patch: Partial<LiveEventLedger>
+): void {
+  if (!filePath) {
+    return;
+  }
+  try {
+    const current = readLiveEventLedger(filePath);
+    const next: LiveEventLedger = {
+      artifacts: patch.artifacts
+        ? mergeByKey(current.artifacts, patch.artifacts, (a) => a.contentHash)
+        : current.artifacts,
+      selfLearning: patch.selfLearning
+        ? mergeByKey(current.selfLearning, patch.selfLearning, (s) => s.id)
+        : current.selfLearning,
+      conversations: patch.conversations
+        ? mergeByKey(current.conversations, patch.conversations, (c) => c.id)
+        : current.conversations
+    };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(next, null, 2) + "\n", "utf8");
+  } catch {
+    // Best-effort local audit cache should never fail a live Meko MCP operation
+  }
 }
 
 function createEmptyQuota(): QuotaUsage {
@@ -390,13 +468,20 @@ export class LiveMekoClient implements MekoClient {
   private resolvedDatapackName: string;
   private conversationId: string | null = null;
   private readonly defaultAgentId = "standards-guard:meko-standards-guard";
+  private readonly stateFilePath?: string;
   private quota: QuotaUsage = createEmptyQuota();
 
-  constructor(options: { datapack: string; mcpUrl?: string; apiToken?: string }) {
+  constructor(options: {
+    datapack: string;
+    mcpUrl?: string;
+    apiToken?: string;
+    stateFilePath?: string;
+  }) {
     this.datapack = options.datapack;
     this.resolvedDatapackName = options.datapack;
     this.mcpUrl = options.mcpUrl ?? process.env.MEKO_MCP_URL ?? "https://mcp.mekodata.ai/mcp";
     this.apiToken = options.apiToken ?? process.env.MEKO_API_TOKEN ?? "";
+    this.stateFilePath = options.stateFilePath;
   }
 
   private formatAgentId(agentId: string): string {
@@ -1037,7 +1122,7 @@ export class LiveMekoClient implements MekoClient {
       }
     );
 
-    return {
+    const entry: ConversationMessage = {
       id: res.id ?? res.message_id ?? `conv_${crypto.randomUUID().slice(0, 8)}`,
       author: msg.author,
       role: msg.role,
@@ -1045,6 +1130,8 @@ export class LiveMekoClient implements MekoClient {
       relatedMemoryId: msg.relatedMemoryId,
       createdAt: res.created_at ?? new Date().toISOString()
     };
+    recordLiveEventLedger(this.stateFilePath, { conversations: [entry] });
+    return entry;
   }
 
   async artifactPut(name: string, payload: unknown): Promise<ArtifactRecord> {
@@ -1068,12 +1155,14 @@ export class LiveMekoClient implements MekoClient {
       agent_id: this.defaultAgentId
     });
 
-    return {
+    const entry: ArtifactRecord = {
       name,
       contentHash: res.content_hash ?? res.contentHash ?? localHash,
       payload,
       createdAt: res.created_at ?? res.createdAt ?? new Date().toISOString()
     };
+    recordLiveEventLedger(this.stateFilePath, { artifacts: [entry] });
+    return entry;
   }
 
   async artifactGet(contentHash: string): Promise<ArtifactRecord | null> {
@@ -1129,7 +1218,7 @@ export class LiveMekoClient implements MekoClient {
       }
     );
 
-    return {
+    const entry: SelfLearningSignal = {
       id: res.id ?? res.message_id ?? `sl_${crypto.randomUUID().slice(0, 8)}`,
       agentId: signal.agentId,
       ruleId: signal.ruleId,
@@ -1138,6 +1227,8 @@ export class LiveMekoClient implements MekoClient {
       outcome: signal.outcome,
       createdAt: res.created_at ?? new Date().toISOString()
     };
+    recordLiveEventLedger(this.stateFilePath, { selfLearning: [entry] });
+    return entry;
   }
 
   async getSnapshot(): Promise<DatapackSnapshot> {
@@ -1249,13 +1340,22 @@ export class LiveMekoClient implements MekoClient {
       };
     });
 
+    const ledger = readLiveEventLedger(this.stateFilePath);
+    const mergedConversations = mergeByKey(
+      conversations,
+      ledger.conversations,
+      (c) => c.id
+    );
+    const mergedArtifacts = mergeByKey([], ledger.artifacts, (a) => a.contentHash);
+    const mergedSelfLearning = mergeByKey(selfLearning, ledger.selfLearning, (s) => s.id);
+
     return {
       datapack: this.resolvedDatapackName,
       knowledge,
       memories: [...privateMemories, ...sharedMemories],
-      conversations,
-      artifacts: [],
-      selfLearning
+      conversations: mergedConversations,
+      artifacts: mergedArtifacts,
+      selfLearning: mergedSelfLearning
     };
   }
 }
@@ -1274,6 +1374,7 @@ export class RecordingMekoClient implements MekoClient {
     mcpUrl?: string;
     apiToken?: string;
     recordingDir?: string;
+    stateFilePath?: string;
   }) {
     this.inner = new LiveMekoClient(options);
     this.recordingDir = options.recordingDir ?? "fixtures/meko/recorded";
@@ -1381,7 +1482,8 @@ export function createMekoClient(options: CreateMekoClientOptions): MekoClient {
     return new LiveMekoClient({
       datapack: options.datapack,
       mcpUrl: options.mcpUrl,
-      apiToken: options.apiToken
+      apiToken: options.apiToken,
+      stateFilePath: options.stateFilePath
     });
   }
   if (options.mode === "record") {
@@ -1389,7 +1491,8 @@ export function createMekoClient(options: CreateMekoClientOptions): MekoClient {
       datapack: options.datapack,
       mcpUrl: options.mcpUrl,
       apiToken: options.apiToken,
-      recordingDir: options.recordingDir
+      recordingDir: options.recordingDir,
+      stateFilePath: options.stateFilePath
     });
   }
   return new MockMekoClient({

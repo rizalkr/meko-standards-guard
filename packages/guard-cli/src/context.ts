@@ -116,11 +116,14 @@ export async function withMekoClient<T>(
   const fixturePath = options.fixturePath
     ? path.resolve(rootDir, options.fixturePath)
     : path.resolve(rootDir, config.fixturePath);
+  const stateFilePath =
+    mode === "mock" ? undefined : path.join(rootDir, ".guard-state", "live-events.json");
 
   const meko = createMekoClient({
     mode,
     datapack: config.datapack,
-    fixturePath
+    fixturePath,
+    stateFilePath
   });
 
   await meko.connect();

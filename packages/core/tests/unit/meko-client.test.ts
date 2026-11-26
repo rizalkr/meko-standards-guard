@@ -1,5 +1,13 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { LiveMekoClient, MockMekoClient } from "../../src/meko-client.js";
+import {
+  LiveMekoClient,
+  MockMekoClient,
+  readLiveEventLedger,
+  recordLiveEventLedger
+} from "../../src/meko-client.js";
 
 describe("MockMekoClient 5-pillar behavior", () => {
   it("isolates private memories by agentId until promoted to shared", async () => {
@@ -94,5 +102,100 @@ describe("LiveMekoClient configuration guard", () => {
       apiToken: ""
     });
     await expect(client.connect()).rejects.toThrow(/MEKO_API_TOKEN is required/i);
+  });
+});
+
+describe("Live event ledger", () => {
+  it("returns empty arrays when the ledger file is missing", () => {
+    const missing = path.join(os.tmpdir(), `meko-missing-${Date.now()}`, "live-events.json");
+    expect(readLiveEventLedger(missing)).toEqual({
+      artifacts: [],
+      selfLearning: [],
+      conversations: []
+    });
+  });
+
+  it("persists and deduplicates artifacts, selfLearning signals, and conversations", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "meko-live-ledger-"));
+    try {
+      const ledgerPath = path.join(tmpDir, ".guard-state", "live-events.json");
+      const now = new Date().toISOString();
+
+      recordLiveEventLedger(ledgerPath, {
+        selfLearning: [
+          {
+            id: "sl_open1",
+            agentId: "opencode",
+            ruleId: "ALL",
+            pattern: "guard_check_passed",
+            remediation: "Implementation satisfied all checked ADR invariants",
+            outcome: "fix_verified",
+            createdAt: now
+          }
+        ],
+        conversations: [
+          {
+            id: "conv_rz1",
+            author: "rizal",
+            role: "maintainer",
+            content: "Promoted mem_123 to shared",
+            relatedMemoryId: "mem_123",
+            createdAt: now
+          }
+        ],
+        artifacts: [
+          {
+            name: "release-receipt-1.json",
+            contentHash: "a".repeat(64),
+            payload: { ok: true },
+            createdAt: now
+          }
+        ]
+      });
+
+      // Re-record duplicates to verify deduplication by id / contentHash
+      recordLiveEventLedger(ledgerPath, {
+        selfLearning: [
+          {
+            id: "sl_open1",
+            agentId: "opencode",
+            ruleId: "ALL",
+            pattern: "guard_check_passed",
+            remediation: "Implementation satisfied all checked ADR invariants",
+            outcome: "fix_verified",
+            createdAt: now
+          }
+        ],
+        conversations: [
+          {
+            id: "conv_rz1",
+            author: "rizal",
+            role: "maintainer",
+            content: "Promoted mem_123 to shared",
+            relatedMemoryId: "mem_123",
+            createdAt: now
+          }
+        ],
+        artifacts: [
+          {
+            name: "release-receipt-1.json",
+            contentHash: "a".repeat(64),
+            payload: { ok: true },
+            createdAt: now
+          }
+        ]
+      });
+
+      const ledger = readLiveEventLedger(ledgerPath);
+      expect(ledger.selfLearning).toHaveLength(1);
+      expect(ledger.selfLearning[0]?.agentId).toBe("opencode");
+      expect(ledger.selfLearning[0]?.outcome).toBe("fix_verified");
+      expect(ledger.conversations).toHaveLength(1);
+      expect(ledger.conversations[0]?.author).toBe("rizal");
+      expect(ledger.artifacts).toHaveLength(1);
+      expect(ledger.artifacts[0]?.contentHash).toBe("a".repeat(64));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

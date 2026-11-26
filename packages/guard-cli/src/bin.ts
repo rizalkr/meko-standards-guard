@@ -159,6 +159,11 @@ program
             `  Tests: ${report.tests.numPassedTests}/${report.tests.numTotalTests} passed (${report.tests.durationMs}ms)`
           );
         }
+        if (recordedSignals.length > 0) {
+          console.log(
+            `  Recorded ${recordedSignals.length} fix_verified self-learning signal(s) for agent "${outcome.agentId}": ${recordedSignals.map((s) => s.id).join(", ")}`
+          );
+        }
       } else {
         console.log(
           `[standards-guard] FAIL: ${report.summary.errors} error(s), ${report.summary.warnings} warning(s) across ${report.checkedFiles.length} file(s):`
