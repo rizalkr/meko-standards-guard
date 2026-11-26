@@ -95,13 +95,65 @@ describe("MockMekoClient 5-pillar behavior", () => {
   });
 });
 
-describe("LiveMekoClient configuration guard", () => {
+describe("LiveMekoClient configuration and payload normalization", () => {
   it("fails fast when MEKO_API_TOKEN is missing", async () => {
     const client = new LiveMekoClient({
       datapack: "test-pack",
       apiToken: ""
     });
     await expect(client.connect()).rejects.toThrow(/MEKO_API_TOKEN is required/i);
+  });
+
+  it("maps Meko promoted_memories payload into shared tier with promotedAt and promotedBy", async () => {
+    const client = new LiveMekoClient({
+      datapack: "payledger-standards-guard",
+      apiToken: "test-token"
+    });
+    const internal = client as unknown as {
+      conversationId: string | null;
+      datapackId: string | null;
+      callMcpTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+    };
+    internal.conversationId = "conv_live_1";
+    internal.datapackId = "dp_live_1";
+    internal.callMcpTool = async (name, args) => {
+      if (name === "datapack_describe") {
+        return { knowledge_chunk_count: 8 };
+      }
+      if (name === "memory_get_all") {
+        if (args.promoted === true) {
+          return {
+            promoted_memories: [
+              {
+                id: "266b7f76-f2a7-4b60-8a82-a21588765b63",
+                agent_id: "cursor:meko-standards-guard",
+                data: "[S2/ADR-002] Candidate learning from cursor: missing requireIdempotency.",
+                created_at: "2026-11-26T07:38:10.900571Z",
+                promoted_to_kb_at: "2026-11-26T07:40:32.044591Z",
+                promoted_by_name: "Rizal Kurnia",
+                promoted_by_email: "rizkrxml@gmail.com"
+              }
+            ]
+          };
+        }
+        return { memories: [] };
+      }
+      if (name === "conversation_list") {
+        return { conversations: [] };
+      }
+      if (name === "selflearning_status") {
+        return { open_fixes: [] };
+      }
+      throw new Error(`Unexpected tool call: ${name}`);
+    };
+
+    const snapshot = await client.getSnapshot();
+    expect(snapshot.memories).toHaveLength(1);
+    const [shared] = snapshot.memories;
+    expect(shared?.tier).toBe("shared");
+    expect(shared?.ruleId).toBe("S2");
+    expect(shared?.promotedAt).toBe("2026-11-26T07:40:32.044591Z");
+    expect(shared?.promotedBy).toBe("Rizal Kurnia");
   });
 });
 

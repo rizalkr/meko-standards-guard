@@ -668,6 +668,21 @@ export class LiveMekoClient implements MekoClient {
     return { ...this.quota };
   }
 
+  private extractMemoryList(
+    val:
+      | Array<Record<string, unknown>>
+      | {
+          memories?: Array<Record<string, unknown>>;
+          promoted_memories?: Array<Record<string, unknown>>;
+          results?: Array<Record<string, unknown>>;
+        }
+  ): Array<Record<string, unknown>> {
+    if (Array.isArray(val)) {
+      return val;
+    }
+    return val.promoted_memories ?? val.memories ?? val.results ?? [];
+  }
+
   private normalizeMemoryRecord(
     raw: Record<string, unknown>,
     fallbackTier: "private" | "shared" = "private"
@@ -686,6 +701,7 @@ export class LiveMekoClient implements MekoClient {
     const isPromoted =
       raw.promoted === true ||
       raw.is_promoted === true ||
+      Boolean(raw.promoted_to_kb_at) ||
       raw.scope === "shared" ||
       raw.tier === "shared" ||
       fallbackTier === "shared";
@@ -707,6 +723,10 @@ export class LiveMekoClient implements MekoClient {
         ? raw.tags.map(String)
         : [];
 
+    const promotedAtVal = raw.promoted_at ?? raw.promotedAt ?? raw.promoted_to_kb_at;
+    const promotedByVal =
+      raw.promoted_by ?? raw.promotedBy ?? raw.promoted_by_name ?? raw.promoted_by_email;
+
     return {
       id,
       content,
@@ -715,14 +735,8 @@ export class LiveMekoClient implements MekoClient {
       ruleId,
       tags,
       createdAt: String(raw.created_at ?? raw.createdAt ?? new Date().toISOString()),
-      promotedAt:
-        raw.promoted_at || raw.promotedAt
-          ? String(raw.promoted_at ?? raw.promotedAt)
-          : undefined,
-      promotedBy:
-        raw.promoted_by || raw.promotedBy
-          ? String(raw.promoted_by ?? raw.promotedBy)
-          : undefined,
+      promotedAt: promotedAtVal ? String(promotedAtVal) : undefined,
+      promotedBy: promotedByVal ? String(promotedByVal) : undefined,
       promotionReason:
         raw.promotion_reason || raw.promotionReason
           ? String(raw.promotion_reason ?? raw.promotionReason)
@@ -766,7 +780,11 @@ export class LiveMekoClient implements MekoClient {
       }),
       this.callMcpTool<
         | Array<Record<string, unknown>>
-        | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+        | {
+            memories?: Array<Record<string, unknown>>;
+            promoted_memories?: Array<Record<string, unknown>>;
+            results?: Array<Record<string, unknown>>;
+          }
       >("memory_get_all", {
         conversation_id: conversationId,
         datapack_id: datapackId,
@@ -775,9 +793,7 @@ export class LiveMekoClient implements MekoClient {
       }).catch(() => [])
     ]);
 
-    const promotedList = Array.isArray(promotedMemRes)
-      ? promotedMemRes
-      : (promotedMemRes.memories ?? promotedMemRes.results ?? []);
+    const promotedList = this.extractMemoryList(promotedMemRes);
     const promotedIds = new Set(
       promotedList
         .map((m) => String(m.id ?? m.memory_id ?? ""))
@@ -1244,7 +1260,12 @@ export class LiveMekoClient implements MekoClient {
             }).catch(() => ({} as Record<string, unknown>))
           : Promise.resolve({} as Record<string, unknown>),
         this.callMcpTool<
-          Array<Record<string, unknown>> | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+          | Array<Record<string, unknown>>
+          | {
+              memories?: Array<Record<string, unknown>>;
+              promoted_memories?: Array<Record<string, unknown>>;
+              results?: Array<Record<string, unknown>>;
+            }
         >("memory_get_all", {
           conversation_id: conversationId,
           datapack_id: datapackId,
@@ -1252,7 +1273,12 @@ export class LiveMekoClient implements MekoClient {
           page_size: 50
         }).catch(() => []),
         this.callMcpTool<
-          Array<Record<string, unknown>> | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
+          | Array<Record<string, unknown>>
+          | {
+              memories?: Array<Record<string, unknown>>;
+              promoted_memories?: Array<Record<string, unknown>>;
+              results?: Array<Record<string, unknown>>;
+            }
         >("memory_get_all", {
           conversation_id: conversationId,
           datapack_id: datapackId,
@@ -1298,17 +1324,10 @@ export class LiveMekoClient implements MekoClient {
       updatedAt: new Date().toISOString()
     }));
 
-    const extractMemList = (
-      val:
-        | Array<Record<string, unknown>>
-        | { memories?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> }
-    ): Array<Record<string, unknown>> =>
-      Array.isArray(val) ? val : (val.memories ?? val.results ?? []);
-
-    const privateMemories = extractMemList(privateMemRes).map((m) =>
+    const privateMemories = this.extractMemoryList(privateMemRes).map((m) =>
       this.normalizeMemoryRecord(m, "private")
     );
-    const sharedMemories = extractMemList(sharedMemRes).map((m) =>
+    const sharedMemories = this.extractMemoryList(sharedMemRes).map((m) =>
       this.normalizeMemoryRecord(m, "shared")
     );
 
