@@ -206,9 +206,10 @@ describe("guard-ui governance HTTP server", () => {
     expect(timelineJson.events.some((e) => e.summary.includes(memId))).toBe(true);
   });
 
-  it("loads preview benchmark template by default and parses recorded benchmark results when present", async () => {
+  it("loads preview benchmark template when results.json is absent and loads recorded benchmark results from repo root", async () => {
     const fixturePath = createIsolatedFixture();
-    const defaultApp = createGovernanceApp({ rootDir: REPO_ROOT, mode: "mock", fixturePath });
+    const { rootDir: emptyRoot } = createTempRootWithStatic();
+    const defaultApp = createGovernanceApp({ rootDir: emptyRoot, mode: "mock", fixturePath });
     const previewRes = await defaultApp.request("/api/benchmark");
     expect(previewRes.status).toBe(200);
     const preview = (await previewRes.json()) as {
@@ -218,6 +219,24 @@ describe("guard-ui governance HTTP server", () => {
     expect(preview.source).toBe("preview_template");
     expect(preview.tasks).toHaveLength(5);
     expect(preview.tasks[0].status).toBe("pending");
+
+    const repoApp = createGovernanceApp({ rootDir: REPO_ROOT, mode: "mock", fixturePath });
+    const repoRes = await repoApp.request("/api/benchmark");
+    expect(repoRes.status).toBe(200);
+    const repoBench = (await repoRes.json()) as {
+      source: string;
+      summary: {
+        completedTasks: number;
+        violationReductionPct: number;
+        baselineTotalViolations: number;
+        guardedTotalViolations: number;
+      };
+    };
+    expect(repoBench.source).toBe("recorded");
+    expect(repoBench.summary.completedTasks).toBe(5);
+    expect(repoBench.summary.baselineTotalViolations).toBeGreaterThan(0);
+    expect(repoBench.summary.guardedTotalViolations).toBe(0);
+    expect(repoBench.summary.violationReductionPct).toBe(100);
 
     const { rootDir } = createTempRootWithStatic();
     const benchDir = path.join(rootDir, "fixtures/benchmark");

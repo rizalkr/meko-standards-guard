@@ -47,9 +47,13 @@ describe("guard-cli bench harness (tiktoken/cl100k_base)", () => {
     expect(countTokens("Implement POST /refunds with idempotent REVERSAL.")).toBe(shortCount);
   });
 
-  it("runs offline dry-run prompt-budget comparison across T1-T5 without writing results.json", async () => {
+  it("runs offline dry-run prompt-budget comparison across T1-T5 without modifying results.json", async () => {
     const tmp = createTempDir();
     const fixturePath = copyMockFixture(tmp);
+    const resultsPath = path.join(ROOT_DIR, "fixtures/benchmark/results.json");
+    const beforeContent = fs.existsSync(resultsPath)
+      ? fs.readFileSync(resultsPath, "utf8")
+      : null;
 
     const dryRun = await benchDryRunAction({
       rootDir: ROOT_DIR,
@@ -67,7 +71,10 @@ describe("guard-cli bench harness (tiktoken/cl100k_base)", () => {
       expect(task.matchedAdrIds.length).toBeGreaterThan(0);
       expect(task.guardedMekoTokens).toBeLessThan(task.baselineFullAdrTokens);
     }
-    expect(fs.existsSync(path.join(ROOT_DIR, "fixtures/benchmark/results.json"))).toBe(false);
+    const afterContent = fs.existsSync(resultsPath)
+      ? fs.readFileSync(resultsPath, "utf8")
+      : null;
+    expect(afterContent).toBe(beforeContent);
   });
 
   it("scores a Cursor vs. OpenCode manifest, validates RecordedBenchmarkSchema, and stores Meko artifact", async () => {

@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-11-26T04:03:18.586Z",
+  "tokenizer": "tiktoken/cl100k_base",
+  "note": "Week 6 5-task fair A/B benchmark (Cursor baseline with full ADR context + remediation turns vs. OpenCode guarded with live Meko context_search retrieval). Prompt tokens measured via tiktoken/cl100k_base over real live Meko retrieval payloads; violation counts scored deterministically via @meko-guard/engine over reproducible candidate files in fixtures/benchmark/runs/ (CLI agents executed via standards-guard harness because Cursor is GUI-only and local OpenCode CLI lacked provider credentials).",
+  "tasks": [
+    {
+      "id": "T1",
+      "task": "Implement POST /refunds with idempotent double-entry REVERSAL",
+      "targetEndpoint": "POST /refunds",
+      "focusRules": [
+        "S1",
+        "S2",
+        "S3",
+        "S4"
+      ],
+      "baseline": {
+        "violations": 4,
+        "correctionTurns": 2,
+        "promptTokens": 1965,
+        "passedFirstTry": false
+      },
+      "guarded": {
+        "violations": 0,
+        "correctionTurns": 0,
+        "promptTokens": 139,
+        "passedFirstTry": true
+      }
+    },
+    {
+      "id": "T2",
+      "task": "Implement POST /payouts/instant atomic balance lock",
+      "targetEndpoint": "POST /payouts/instant",
+      "focusRules": [
+        "S2",
+        "S3",
+        "S5"
+      ],
+      "baseline": {
+        "violations": 3,
+        "correctionTurns": 2,
+        "promptTokens": 1957,
+        "passedFirstTry": false
+      },
+      "guarded": {
+        "violations": 0,
+        "correctionTurns": 0,
+        "promptTokens": 362,
+        "passedFirstTry": true
+      }
+    },
+    {
+      "id": "T3",
+      "task": "Implement GET /merchants/:id/statement without PII leak",
+      "targetEndpoint": "GET /merchants/:id/statement",
+      "focusRules": [
+        "S4",
+        "S7"
+      ],
+      "baseline": {
+        "violations": 3,
+        "correctionTurns": 2,
+        "promptTokens": 1950,
+        "passedFirstTry": false
+      },
+      "guarded": {
+        "violations": 0,
+        "correctionTurns": 0,
+        "promptTokens": 120,
+        "passedFirstTry": true
+      }
+    },
+    {
+      "id": "T4",
+      "task": "Implement POST /webhooks/stripe-retry raw HMAC replay check",
+      "targetEndpoint": "POST /webhooks/stripe-retry",
+      "focusRules": [
+        "S4",
+        "S6"
+      ],
+      "baseline": {
+        "violations": 2,
+        "correctionTurns": 1,
+        "promptTokens": 1914,
+        "passedFirstTry": false
+      },
+      "guarded": {
+        "violations": 0,
+        "correctionTurns": 0,
+        "promptTokens": 211,
+        "passedFirstTry": true
+      }
+    },
+    {
+      "id": "T5",
+      "task": "Preserve historical invoice snapshots across PATCH merchant rates",
+      "targetEndpoint": "PATCH /merchants/:id/rates",
+      "focusRules": [
+        "S1",
+        "S7",
+        "S8"
+      ],
+      "baseline": {
+        "violations": 3,
+        "correctionTurns": 2,
+        "promptTokens": 1939,
+        "passedFirstTry": false
+      },
+      "guarded": {
+        "violations": 0,
+        "correctionTurns": 0,
+        "promptTokens": 257,
+        "passedFirstTry": true
+      }
+    }
+  ]
+}
