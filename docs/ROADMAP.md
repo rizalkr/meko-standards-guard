@@ -29,7 +29,8 @@
   - 13 new tests (unit + end-to-end invariants); total test suite at **19/19 passing**.
   - `POST /refunds` intentionally omitted for Week 6 live cross-agent demonstration.
 
-### Week 3 — Guard Static & Dynamic Engine (`packages/guard-engine`) [NEXT]
+### Week 3 — Guard Static & Dynamic Engine (`packages/guard-engine`) [DONE]
+- Commit: `5704478`
 - Deliverables:
   - `ast-checker.ts` (`ts-morph`): deterministic checks for `S1` (float money arithmetic), `S2` (mutation routes without `requireIdempotency`), `S3` (`db.update`/`db.delete` on `ledgerEntries`), `S5` (payout writes outside `db.transaction`), `S6` (`JSON.parse` before HMAC verification), and `S8` (unapproved diffs on `standards/` or `guard.config.json`).
   - `pii-taint.ts`: `ts-morph` intra/inter-procedural taint tracker tracing `merchants` rows and PII identifiers (`bankAccountNumber`, `routingNumber`, `taxId`) into `c.json(...)` and `console.*` (`S4`).
@@ -38,7 +39,8 @@
   - `blast-radius.ts`: computes `ADR -> files -> Hono routes -> Vitest tests` graph.
   - Fixture unit tests proving `100%` catch rate on intentionally violated snippets for `S1`–`S8` and `0` false positives on `packages/payledger`.
 
-### Week 4 — Full ADLC CLI & Native MCP Server (`packages/guard-cli`)
+### Week 4 — Full ADLC CLI & Native MCP Server (`packages/guard-cli`) [DONE]
+- Commit: `6390e8e`
 - Deliverables:
   - Expand `packages/guard-cli/src/bin.ts` with:
     - `spec-check <file>`: pre-implementation RFC conflict report (`PASS`/`FAIL` + cited ADRs).
@@ -50,7 +52,8 @@
     - `bench`: executes and scores the A/B token & turn benchmark.
   - Add `standards-guard mcp`: native stdio MCP server exposing `guard_preflight`, `guard_verify_diff`, `guard_explain_rule`, and `guard_blast_radius`.
 
-### Week 5 — Local Governance Control Plane (`packages/guard-ui`)
+### Week 5 — Local Governance Control Plane (`packages/guard-ui`) [DONE]
+- Commit: `62444de`
 - Deliverables:
   - React + Vite + Tailwind web app (`localhost:4321`) backed by a lightweight local HTTP bridge serving `fixtures/meko/mock-datapack.json` (or `.cache`) so inspecting the UI burns **zero** live Meko searches.
   - 4 focused views:
@@ -59,7 +62,8 @@
     3. **ADR Blast-Radius Graph**: interactive mapping from `S1`–`S8` ADRs to PayLedger modules, routes, and tests.
     4. **A/B Benchmark Panel**: visual comparison of Baseline vs Standards Guard (violations, correction turns, prompt tokens).
 
-### Week 6 — Live Meko Integration, Cross-Agent Demo & A/B Benchmark
+### Week 6 — Live Meko Integration, Cross-Agent Demo & A/B Benchmark [DONE]
+- Commits: `1a0dedf`..`8ea45df`
 - Deliverables:
   - Create free YugabyteDB Meko account and single datapack `payledger-standards-guard`; configure local `.env` (gitignored).
   - Run `npm run guard:seed -- --mode live` to upload `ADR-001`–`ADR-008`.
@@ -67,7 +71,7 @@
   - Execute and record fixtures (`--mode record`) for the 2-beat Cross-Agent Vaccination workflow (`POST /refunds` in Cursor -> block -> human approve -> `POST /payouts/instant` in OpenCode -> pass first try -> `release-gate`).
   - Run the 5-task A/B Benchmark (`Baseline without Meko` vs `Standards Guard with Meko`) using `tiktoken` + real agent turn logs.
 
-### Week 7 & Buffer (January 7–16, 2027) — Final Audit, Video & Submission
+### Week 7 & Buffer (January 7–16, 2027) — Final Audit, Video & Submission [IN PROGRESS]
 - Deliverables:
   - Clean-repo audit: verify zero secrets/tokens, zero internal data, zero `.db` artifacts, and clean `git clone` offline quickstart in `--mode mock`.
   - Record `< 4:30` demo video covering 5 tight beats:

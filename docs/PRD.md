@@ -74,13 +74,13 @@ PayLedger Mini intentionally leaves `POST /refunds` unimplemented ([`specs/001-r
 | :--- | :--- | :--- | :--- |
 | **FR-1** | **Config, ADR Loader & Datapack Seeding** | Parse `guard.config.json` with Zod, load `standards/ADR-*.md`, seed into Meko (`seed`), report counts across all 5 primitives (`status`), support `--mode mock \| record \| live`. | **Implemented** (Week 1) |
 | **FR-2** | **PayLedger Mini Financial Core** | 5 Drizzle SQLite tables, `BigInt` banker's rounding, idempotency middleware, double-entry ledger engine, Hono routes (`accounts`, `invoices`, `payouts`, `webhooks`), and S1–S7 invariant test suite. | **Implemented** (Week 2) |
-| **FR-3** | **Pre-Implementation Spec Gate** | `guard spec-check <spec.md>` checks RFC proposals against indexed ADRs (`context_search` / local rules) and reports `PASS`/`FAIL` conflicts prior to coding. | Planned (Week 3–4) |
-| **FR-4** | **Deterministic Code Guard** | `guard check --staged` runs `ts-morph` AST checks + PII taint analysis + scoped `vitest` invariant suite, returning `PASS`/`FAIL` with rule ID, ADR citation, file/line span, and Meko trace. | Planned (Week 3–4) |
-| **FR-5** | **Human-Gated Promotion Queue** | Store unapproved agent learnings as `tier: "private"` isolated by `agentId`; expose `guard queue` and `guard approve <id> --reason "..."` to invoke `memory_promote` + `conversation_add_message`. | Planned (Week 4) |
-| **FR-6** | **ADR-to-Code Blast Radius** | `guard impact <ADR-ID>` maps an ADR rule to matched files, Hono route definitions, and Vitest test files so reviewers see exact impact before approving changes. | Planned (Week 3–4) |
-| **FR-7** | **Release Gate & Compliance Receipts** | `guard release-gate` verifies AST checks, invariant tests, typecheck/build, and empty unapproved governance diffs, then emits a content-addressed JSON receipt via `artifact_put`. | Planned (Week 4) |
-| **FR-8** | **Native Guard MCP Server** | `standards-guard mcp` exposes `guard_preflight`, `guard_verify_diff`, `guard_explain_rule`, and `guard_blast_radius` over stdio MCP alongside Meko MCP. | Planned (Week 4) |
-| **FR-9** | **Local Governance UI & Benchmark** | `packages/guard-ui` (`localhost:4321`) visualizes Approval Queue, Cross-Agent Timeline, Blast-Radius Graph, and A/B Benchmark; `guard bench` computes `tiktoken` + real turn comparisons. | Planned (Week 5–6) |
+| **FR-3** | **Pre-Implementation Spec Gate** | `guard spec-check <spec.md>` checks RFC proposals against indexed ADRs (`context_search` / local rules) and reports `PASS`/`FAIL` conflicts prior to coding. | **Implemented** (Week 3–4) |
+| **FR-4** | **Deterministic Code Guard** | `guard check --staged` runs `ts-morph` AST checks + PII taint analysis + scoped `vitest` invariant suite, returning `PASS`/`FAIL` with rule ID, ADR citation, file/line span, and Meko trace. | **Implemented** (Week 3–4) |
+| **FR-5** | **Human-Gated Promotion Queue** | Store unapproved agent learnings as `tier: "private"` isolated by `agentId`; expose `guard queue` and `guard approve <id> --reason "..."` to invoke `memory_promote` + `conversation_add_message`. | **Implemented** (Week 4) |
+| **FR-6** | **ADR-to-Code Blast Radius** | `guard impact <ADR-ID>` maps an ADR rule to matched files, Hono route definitions, and Vitest test files so reviewers see exact impact before approving changes. | **Implemented** (Week 3–4) |
+| **FR-7** | **Release Gate & Compliance Receipts** | `guard release-gate` verifies AST checks, invariant tests, typecheck/build, and empty unapproved governance diffs, then emits a content-addressed JSON receipt via `artifact_put`. | **Implemented** (Week 4) |
+| **FR-8** | **Native Guard MCP Server** | `standards-guard mcp` exposes `guard_preflight`, `guard_verify_diff`, `guard_explain_rule`, and `guard_blast_radius` over stdio MCP alongside Meko MCP. | **Implemented** (Week 4) |
+| **FR-9** | **Local Governance UI & Benchmark** | `packages/guard-ui` (`localhost:4321`) visualizes Approval Queue, Cross-Agent Timeline, Blast-Radius Graph, and A/B Benchmark; `guard bench` computes `tiktoken` + real turn comparisons. | **Implemented** (Week 5–6) |
 
 ---
 
