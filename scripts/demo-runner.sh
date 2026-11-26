@@ -14,10 +14,12 @@ HANDSFREE=0
 SKIP_AGENT_MCP=0
 SKIP_AGENT_PROMPTS=0
 OPENCODE_MODEL="${DEMO_OPENCODE_MODEL:-opencode/deepseek-v4.1-flash-free}"
-AGENT_TIMEOUT="${DEMO_AGENT_TIMEOUT:-28}"
+CODEX_MODEL="${DEMO_CODEX_MODEL:-}"
+AGENT_TIMEOUT="${DEMO_AGENT_TIMEOUT:-35}"
 CURSOR_LOGGED_IN=0
-TYPING_WPM=51
-TYPING_ACCURACY=86
+CODEX_LOGGED_IN=0
+TYPING_WPM=115
+TYPING_ACCURACY=98
 STEP_START_MS=0
 START_STEP=1
 ASSUME_YES=0
@@ -29,6 +31,7 @@ CDP_PORT=9222
 UI_PID=""
 CURSOR_AGENT_BIN=""
 OPENCODE_BIN=""
+CODEX_BIN=""
 BROWSER_BIN=""
 BROWSER_PID=""
 CHROME_PROFILE_DIR=""
@@ -62,14 +65,14 @@ Options:
   --live              Live Meko mode (syncs CLI and guard:ui --mode live on the same datapack)
   --port <port>       Port for guard:ui server (default: 4321)
   --no-ui             Skip launching background guard:ui server
-  --no-agent-mcp      Skip live cursor-agent / opencode MCP verification in Beat 1
-  --no-agent-prompts  Skip live cursor-agent -p / opencode run MCP prompts in Beats 3-4
+  --no-agent-mcp      Skip live cursor-agent / opencode / codex MCP verification in Beat 1
+  --no-agent-prompts  Skip live cursor-agent -p / opencode run / codex exec MCP prompts in Beats 3-4
   --browser           Open clean Chrome window and run full CDP UI choreography
                       (auto-refresh, adaptive menu switching, filter clicks, smooth scroll, spotlighting)
   --cdp-port <port>   Local Chrome DevTools Protocol port for --browser (default: 9222)
   --fast              Print commands immediately without simulated typing
-  --wpm <15..200>     Human typing speed in net WPM (default: 51)
-  --accuracy <50..100> Human typing accuracy percentage with realistic typos/backspace (default: 86)
+  --wpm <15..300>     Adaptive typing speed in net WPM (default: 115)
+  --accuracy <50..100> Typing accuracy percentage with subtle typo/backspace (default: 98; long prompts/paths/IDs auto-paste)
   --auto              Non-interactive auto-advance (allowed in --mock mode only)
   --handsfree         1-Enter OBS autopilot: pause once at start (and once after Beat 5),
                       then auto-run all 5 beats with VO-paced dwell pauses (works in --mock & --live)
@@ -202,8 +205,8 @@ if ! [[ "$START_STEP" =~ ^[1-5]$ ]]; then
   exit 1
 fi
 
-if ! [[ "$TYPING_WPM" =~ ^[0-9]+$ ]] || (( TYPING_WPM < 15 || TYPING_WPM > 200 )); then
-  echo "Error: Invalid --wpm value '$TYPING_WPM'. Must be an integer between 15 and 200." >&2
+if ! [[ "$TYPING_WPM" =~ ^[0-9]+$ ]] || (( TYPING_WPM < 15 || TYPING_WPM > 300 )); then
+  echo "Error: Invalid --wpm value '$TYPING_WPM'. Must be an integer between 15 and 300." >&2
   exit 1
 fi
 
@@ -325,10 +328,10 @@ function fmtSrt(ms) {
 }
 
 const VO_CUES = {
-  "1": "AI coding agents start every session from zero. Standards memorized in Cursor never reach OpenCode or Claude Code, prose ADR files get ignored under long context, and letting agents write directly into shared memory risks context poisoning. Meko Standards Guard solves this with one YugabyteDB Meko datapack (`payledger-standards-guard`) wired live over MCP to both Cursor and OpenCode—combining all five Meko primitives: Knowledge Base for 8 financial ADRs (`S1`–`S8`), 2-tier Private and Shared Memory for human-gated learnings, Conversations for audit logs, Content-Addressed Artifacts for release receipts, and Self-Learning signals.",
+  "1": "AI coding agents start every session from zero. Standards memorized in Cursor never reach OpenCode, Codex, or Claude Code, prose ADR files get ignored under long context, and letting agents write directly into shared memory risks context poisoning. Meko Standards Guard solves this with one YugabyteDB Meko datapack (`payledger-standards-guard`) wired live over MCP to Cursor, OpenCode, and Codex—combining all five Meko primitives: Knowledge Base for 8 financial ADRs (`S1`–`S8`), 2-tier Private and Shared Memory for human-gated learnings, Conversations for audit logs, Content-Addressed Artifacts for release receipts, and Self-Learning signals.",
   "2": "Before writing a single line of code, `standards-guard spec-check` checks our draft refunds RFC against Meko ADRs and catches three invariant conflicts immediately—optional idempotency, mutating append-only `ledger_entries`, and returning raw merchant PII. `standards-guard impact ADR-003` shows the exact files, routes, and Vitest invariants in its blast radius.",
   "3": "When Cursor ignores the spec and writes a naive `POST /refunds` handler, our `ts-morph` AST and PII taint engine blocks it deterministically: missing idempotency (`S2`), float fee math (`S1`), direct `db.update(ledgerEntries)` (`S3`), and raw merchant PII in `c.json` (`S4`). Crucially, Standards Guard quarantines these findings in Cursor's private Meko memory (`memory_add`) so an unreviewed agent cannot poison team context. Cursor inspects the pending items via `guard_queue_list` over MCP—confirming agents cannot self-promote under `ADR-008`—before a human maintainer runs `approve`, calling `memory_promote` and logging an audit message to Meko Conversations.",
-  "4": "Now a fresh OpenCode session starts with zero chat history. Running `opencode run` calls `guard_preflight` over MCP and immediately receives the exact ADR chunk plus the newly promoted lesson. OpenCode implements `POST /refunds` using `requireIdempotency`, `multiplyBpsBankers`, `reverseLedgerGroup`, and `toPublicMerchantDto`—passing `guard check` on its very first try. Running `standards-guard release-gate` verifies all AST and SQLite ledger invariants and emits a SHA-256 compliance receipt artifact directly into Meko.",
+  "4": "Now fresh OpenCode and Codex sessions start with zero chat history. Both `opencode run` and `codex exec` call `guard_preflight` over MCP and immediately receive the exact ADR chunk plus the newly promoted lesson. OpenCode implements `POST /refunds` using `requireIdempotency`, `multiplyBpsBankers`, `reverseLedgerGroup`, and `toPublicMerchantDto`—passing `guard check` on its very first try. Running `standards-guard release-gate` verifies all AST and SQLite ledger invariants and emits a SHA-256 compliance receipt artifact directly into Meko.",
   "5": "Across five representative PayLedger endpoints measured with `tiktoken`, replacing full-ADR prompting and retry loops with targeted Meko retrieval cut rule violations from 15 to zero, eliminated correction turns from 1.8 to zero, and reduced prompt tokens from 9,725 to 1,089—an 88.8% reduction. Every agent config, ADR, and test suite is open-source and runs offline in zero-key `--mode mock` with one command. One Meko datapack, every coding agent, zero drift."
 };
 
@@ -524,6 +527,7 @@ load_dotenv_exports
 if [[ "$SKIP_AGENT_MCP" -eq 0 ]]; then
   CURSOR_AGENT_BIN="$(command -v cursor-agent 2>/dev/null || true)"
   OPENCODE_BIN="$(command -v opencode 2>/dev/null || true)"
+  CODEX_BIN="$(command -v codex 2>/dev/null || true)"
   if [[ -n "$CURSOR_AGENT_BIN" && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
     if command -v timeout >/dev/null 2>&1; then
       cursor_status_out="$(timeout 5s "$CURSOR_AGENT_BIN" status 2>&1 || true)"
@@ -532,6 +536,17 @@ if [[ "$SKIP_AGENT_MCP" -eq 0 ]]; then
     fi
     if [[ -n "$cursor_status_out" ]] && ! printf '%s\n' "$cursor_status_out" | grep -iq "not logged in"; then
       CURSOR_LOGGED_IN=1
+    fi
+  fi
+  if [[ -n "$CODEX_BIN" && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+      codex_status_out="$(timeout 5s "$CODEX_BIN" login status 2>&1 || true)"
+    else
+      codex_status_out="$("$CODEX_BIN" login status 2>&1 || true)"
+    fi
+    if [[ -n "$codex_status_out" ]] && printf '%s\n' "$codex_status_out" | grep -iq "logged in" && \
+       ! printf '%s\n' "$codex_status_out" | grep -iq "not logged in"; then
+      CODEX_LOGGED_IN=1
     fi
   fi
   if [[ -n "$OPENCODE_BIN" ]] && has_live_token; then
@@ -1286,7 +1301,6 @@ format_cmd_display() {
 }
 
 print_cmd() {
-  local cmd_text="$1"
   if [[ -t 1 ]]; then
     printf '\033[1;32m$\033[0m '
   else
@@ -1294,14 +1308,14 @@ print_cmd() {
   fi
 
   if [[ "$FAST" -eq 1 || ( ! -t 1 && "${DEMO_TYPING_FORCE:-0}" != "1" ) ]]; then
-    printf '%s\n' "$cmd_text"
+    printf '%s\n' "$(format_cmd_display "$@")"
     return 0
   fi
 
-  node - "$cmd_text" "$TYPING_WPM" "$TYPING_ACCURACY" <<'NODE'
-const [cmdText, wpmStr, accStr] = process.argv.slice(2);
-const wpm = Math.max(15, Math.min(200, Number(wpmStr) || 51));
-const acc = Math.max(50, Math.min(100, Number(accStr) || 86));
+  node - "$TYPING_WPM" "$TYPING_ACCURACY" "$@" <<'NODE'
+const [wpmStr, accStr, ...rawArgs] = process.argv.slice(2);
+const wpm = Math.max(15, Math.min(300, Number(wpmStr) || 115));
+const acc = Math.max(50, Math.min(100, Number(accStr) || 98));
 const rawScale = Number(process.env.DEMO_TYPING_SCALE ?? "1");
 const scale = Number.isFinite(rawScale) && rawScale > 0 ? Math.max(0.005, rawScale) : 1;
 
@@ -1335,7 +1349,7 @@ const ADJACENT = {
 
 const targetNetMsPerChar = 60000 / (wpm * 5);
 const errorRate = Math.max(0, Math.min(0.45, (100 - acc) / 100));
-const baseCharMs = Math.max(45, targetNetMsPerChar - errorRate * 500);
+const baseCharMs = Math.max(18, targetNetMsPerChar * 0.72 - errorRate * 220);
 
 function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.round(ms * scale))));
@@ -1345,8 +1359,24 @@ function writeOut(str) {
   process.stdout.write(str);
 }
 
-async function run() {
-  const chars = Array.from(cmdText);
+function formatToken(rawArg) {
+  if (/[\s"']/.test(rawArg)) {
+    return '"' + rawArg.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+  }
+  return rawArg;
+}
+
+function shouldPaste(rawArg) {
+  return (
+    rawArg.length >= 32 ||
+    /^mem_[a-zA-Z0-9_-]+$/i.test(rawArg) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawArg) ||
+    (rawArg.includes("/") && rawArg.length >= 20)
+  );
+}
+
+async function typeToken(token) {
+  const chars = Array.from(token);
   let lastWasSpace = false;
 
   for (let i = 0; i < chars.length; i += 1) {
@@ -1360,43 +1390,40 @@ async function run() {
     if (eligible && rand() < errorRate) {
       const modeRoll = rand();
       if (modeRoll < 0.2 && nextCh && /^[a-z]$/.test(nextCh) && nextCh !== ch) {
-        // Transposition slip: type nextCh then ch, pause to notice, backspace twice, then type ch
         writeOut(nextCh);
-        await waitMs(randRange(75, 130));
+        await waitMs(randRange(50, 85));
         writeOut(ch);
-        await waitMs(randRange(180, 310));
+        await waitMs(randRange(110, 195));
         writeOut("\b \b");
-        await waitMs(randRange(85, 135));
+        await waitMs(randRange(50, 85));
         writeOut("\b \b");
-        await waitMs(randRange(70, 120));
+        await waitMs(randRange(50, 85));
       } else if (modeRoll < 0.35 && isLowerAlpha) {
-        // Double-tap slip: type ch twice, pause to notice, backspace once, continue
         writeOut(ch);
-        await waitMs(randRange(55, 95));
+        await waitMs(randRange(45, 75));
         writeOut(ch);
-        await waitMs(randRange(160, 260));
+        await waitMs(randRange(110, 195));
         writeOut("\b \b");
-        await waitMs(randRange(65, 115));
+        await waitMs(randRange(50, 85));
         lastWasSpace = false;
         continue;
       } else {
-        // Adjacent QWERTY key slip (+ occasional 1-char overshoot)
         const neighbors = ADJACENT[ch];
         const wrong = neighbors[Math.floor(rand() * neighbors.length)] || ch;
         writeOut(wrong);
         let overshoot = false;
         if (nextCh && !/\s/.test(nextCh) && rand() < 0.3) {
           overshoot = true;
-          await waitMs(randRange(65, 125));
+          await waitMs(randRange(50, 85));
           writeOut(nextCh);
         }
-        await waitMs(randRange(180, 320));
+        await waitMs(randRange(110, 195));
         if (overshoot) {
           writeOut("\b \b");
-          await waitMs(randRange(85, 135));
+          await waitMs(randRange(50, 85));
         }
         writeOut("\b \b");
-        await waitMs(randRange(65, 120));
+        await waitMs(randRange(50, 85));
       }
     }
 
@@ -1404,16 +1431,34 @@ async function run() {
 
     let delay = baseCharMs * bellJitter(0.62, 1.42);
     if (isUpper || /[-/.0-9_]/.test(ch)) {
-      delay += randRange(50, 130);
+      delay += randRange(6, 18);
     }
-    if (ch === " " && !lastWasSpace && rand() < 0.08) {
-      delay += randRange(140, 280);
+    if (ch === " " && !lastWasSpace && rand() < 0.05) {
+      delay += randRange(60, 120);
     }
     lastWasSpace = ch === " ";
     await waitMs(delay);
   }
+}
 
-  await waitMs(randRange(180, 340));
+async function run() {
+  for (let idx = 0; idx < rawArgs.length; idx += 1) {
+    const rawArg = rawArgs[idx];
+    const token = formatToken(rawArg);
+    if (idx > 0) {
+      writeOut(" ");
+      await waitMs(baseCharMs * bellJitter(0.6, 1.2));
+    }
+    if (shouldPaste(rawArg)) {
+      await waitMs(randRange(65, 115));
+      writeOut(token);
+      await waitMs(randRange(40, 75));
+    } else {
+      await typeToken(token);
+    }
+  }
+
+  await waitMs(randRange(70, 130));
   writeOut("\n");
 }
 
@@ -1438,7 +1483,7 @@ run_cmd() {
   shift
   local display
   display="$(format_cmd_display "$@")"
-  print_cmd "$display"
+  print_cmd "$@"
   local cmd_start_ms
   cmd_start_ms="$(elapsed_ms)"
   if "$@"; then
@@ -1460,7 +1505,7 @@ run_cmd_timeout() {
   shift 2
   local display
   display="$(format_cmd_display "$@")"
-  print_cmd "$display"
+  print_cmd "$@"
   local cmd_start_ms
   cmd_start_ms="$(elapsed_ms)"
   local rc=0
@@ -1500,7 +1545,7 @@ run_cmd_tee() {
   shift 2
   local display
   display="$(format_cmd_display "$@")"
-  print_cmd "$display"
+  print_cmd "$@"
   local cmd_start_ms
   cmd_start_ms="$(elapsed_ms)"
   if "$@" 2>&1 | tee "$out_file"; then
@@ -1568,6 +1613,9 @@ else
   if [[ -n "$OPENCODE_BIN" ]]; then
     AGENT_MCP_PARTS+=("opencode")
   fi
+  if [[ -n "$CODEX_BIN" ]]; then
+    AGENT_MCP_PARTS+=("codex")
+  fi
   if [[ "${#AGENT_MCP_PARTS[@]}" -gt 0 ]]; then
     AGENT_MCP_JOINED="${AGENT_MCP_PARTS[0]}"
     for ((i = 1; i < ${#AGENT_MCP_PARTS[@]}; i++)); do
@@ -1581,20 +1629,24 @@ fi
 if [[ "$SKIP_AGENT_MCP" -eq 1 || "$SKIP_AGENT_PROMPTS" -eq 1 ]]; then
   echo "Agent Run: skipped"
 else
-  if [[ "$MODE" == "mock" ]]; then
-    if [[ "$CURSOR_LOGGED_IN" -eq 1 ]]; then
-      CURSOR_LOGIN_LABEL="logged in"
-    else
-      CURSOR_LOGIN_LABEL="NOT logged in — run 'cursor-agent login'"
-    fi
-    echo "Agent Run: mock-skipped (0 quota; in --live: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL}, timeout ${AGENT_TIMEOUT}s)"
+  if [[ "$CURSOR_LOGGED_IN" -eq 1 ]]; then
+    CURSOR_LOGIN_LABEL="logged in"
   else
-    if [[ "$CURSOR_LOGGED_IN" -eq 1 ]]; then
-      CURSOR_LOGIN_LABEL="logged in"
-    else
-      CURSOR_LOGIN_LABEL="NOT logged in — Beat 3 prompt will be skipped"
-    fi
-    echo "Agent Run: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL} (timeout ${AGENT_TIMEOUT}s)"
+    CURSOR_LOGIN_LABEL="NOT logged in — run 'cursor-agent login'"
+  fi
+  if [[ "$CODEX_LOGGED_IN" -eq 1 ]]; then
+    CODEX_LOGIN_LABEL="logged in"
+  else
+    CODEX_LOGIN_LABEL="NOT logged in — run 'codex login'"
+  fi
+  CODEX_MODEL_LABEL=""
+  if [[ -n "$CODEX_MODEL" ]]; then
+    CODEX_MODEL_LABEL=" -m ${CODEX_MODEL}"
+  fi
+  if [[ "$MODE" == "mock" ]]; then
+    echo "Agent Run: mock-skipped (0 quota; in --live: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL} + codex${CODEX_MODEL_LABEL} [${CODEX_LOGIN_LABEL}], timeout ${AGENT_TIMEOUT}s)"
+  else
+    echo "Agent Run: cursor-agent [${CURSOR_LOGIN_LABEL}] + opencode -m ${OPENCODE_MODEL} + codex${CODEX_MODEL_LABEL} [${CODEX_LOGIN_LABEL}] (timeout ${AGENT_TIMEOUT}s)"
   fi
 fi
 if [[ "$OPEN_BROWSER" -eq 1 ]]; then
@@ -1614,7 +1666,7 @@ fi
 if [[ "$FAST" -eq 1 ]]; then
   echo "Typing   : fast (instant)"
 else
-  echo "Typing   : human (~${TYPING_WPM} WPM, ${TYPING_ACCURACY}% accuracy with realistic typos & backspace)"
+  echo "Typing   : adaptive (~${TYPING_WPM} WPM, ${TYPING_ACCURACY}% accuracy; auto-paste long prompts, paths & IDs)"
 fi
 if [[ "$HANDSFREE" -eq 1 ]]; then
   echo "Pacing   : handsfree (press Enter ONCE -> auto-runs all 5 beats, target ~03:55-04:10 live)"
@@ -1653,8 +1705,11 @@ if (( START_STEP <= 1 )); then
     if [[ -n "$OPENCODE_BIN" ]]; then
       run_cmd 1 opencode mcp list
     fi
+    if [[ -n "$CODEX_BIN" ]]; then
+      run_cmd 1 codex mcp list
+    fi
   fi
-  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40" 36 4
+  wait_next "Beat 2/5: Pre-Implementation Spec Gate & Blast Radius" "00:40" 26 2
   end_active_beat
 fi
 
@@ -1665,11 +1720,11 @@ if (( START_STEP <= 2 )); then
   clear_screen
   run_cmd 1 npm run guard:spec-check -- specs/001-refunds-rfc.md "${MODE_ARGS[@]}"
   browser_action beat2a_spec
-  wait_next "Beat 2b: ADR-003 Blast Radius" "01:00" 18 4
+  wait_next "Beat 2b: ADR-003 Blast Radius" "01:00" 14 2
   mark_step_start
   run_cmd 0 npm run guard:impact -- ADR-003
   browser_action beat2b_blast
-  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:15" 15 4
+  wait_next "Blast Radius ?view=blast -> Enter for Beat 3/5" "01:15" 12 2
   end_active_beat
 fi
 
@@ -1680,7 +1735,7 @@ if (( START_STEP <= 3 )); then
   clear_screen
   run_cmd_tee 1 "${CHECK_OUT}" npm run guard:check -- --agent cursor --files fixtures/benchmark/runs/t1-baseline-cursor.ts "${MODE_ARGS[@]}"
   MEM_ID="$(extract_mem_id_from_check "${CHECK_OUT}")"
-  wait_next "Beat 3b: Inspect Private Approval Queue" "01:40" 22 4
+  wait_next "Beat 3b: Inspect Private Approval Queue" "01:40" 16 2
   mark_step_start
   run_cmd_tee 0 "${QUEUE_OUT}" npm run guard:queue -- "${MODE_ARGS[@]}"
   if [[ -z "${MEM_ID}" ]]; then
@@ -1718,11 +1773,11 @@ if (( START_STEP <= 3 )); then
       fi
     fi
   fi
-  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10" 26 4
+  wait_next "Beat 3c: Approve ${MEM_ID} (memory_promote -> shared)" "02:10" 20 2
   mark_step_start
   run_cmd 0 npm run guard:approve -- "${MEM_ID}" --reason "Verified ADR-002/003/004 refund safeguards" --by rizal "${MODE_ARGS[@]}"
   browser_action beat3c_timeline "${MEM_ID}"
-  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35" 24 4
+  wait_next "Timeline ?view=timeline (ID ${MEM_ID} synced) -> Beat 4/5" "02:35" 18 2
   end_active_beat
 fi
 
@@ -1745,13 +1800,36 @@ if (( START_STEP <= 4 )); then
     fi
   fi
   run_cmd 0 npm run guard:check -- --agent opencode --files fixtures/benchmark/runs/t1-guarded-opencode.ts --record-fix "${MODE_ARGS[@]}"
+  if [[ "$SKIP_AGENT_MCP" -eq 0 && "$SKIP_AGENT_PROMPTS" -eq 0 ]]; then
+    if [[ "$MODE" == "live" ]]; then
+      if [[ -n "$CODEX_BIN" && "$CODEX_LOGGED_IN" -eq 1 ]] && has_live_token; then
+        CODEX_EXEC_ARGS=(exec --ephemeral -s read-only)
+        if [[ -n "$CODEX_MODEL" ]]; then
+          CODEX_EXEC_ARGS+=(-m "$CODEX_MODEL")
+        fi
+        run_cmd_timeout 1 "$AGENT_TIMEOUT" codex "${CODEX_EXEC_ARGS[@]}" "Use standards-guard guard_preflight with agentId \"codex\" for POST /refunds and list the top ADR and promoted shared-memory rules in 2 concise bullets."
+      elif [[ -n "$CODEX_BIN" ]]; then
+        if [[ -t 1 ]]; then
+          printf '\033[2m[demo-runner] Skipping live codex exec prompt (not logged in; run '\''codex login'\'').\033[0m\n'
+        else
+          echo "[demo-runner] Skipping live codex exec prompt (not logged in; run 'codex login')."
+        fi
+      fi
+    else
+      if [[ -t 1 ]]; then
+        printf '\033[2m[mock mode] Skipping live codex exec MCP prompt (0 quota; runs automatically in --live).\033[0m\n'
+      else
+        echo "[mock mode] Skipping live codex exec MCP prompt (0 quota; runs automatically in --live)."
+      fi
+    fi
+  fi
   browser_action beat4a_opencode
-  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:15" 36 4
+  wait_next "Beat 4b: Run Release Gate & Emit SHA-256 Receipt" "03:15" 24 2
   mark_step_start
   run_cmd_tee 0 "${RELEASE_OUT}" npm run guard:release-gate -- "${MODE_ARGS[@]}"
   RECEIPT_SHA="$(extract_receipt_sha "${RELEASE_OUT}")"
   browser_action beat4b_receipt "${RECEIPT_SHA}"
-  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35" 18 4
+  wait_next "Beat 5/5: Show A/B Benchmark & Closing" "03:35" 14 2
   end_active_beat
 fi
 
@@ -1772,7 +1850,7 @@ if (( START_STEP <= 5 )); then
     if (( BEAT5_SPENT_MS < 0 )); then
       BEAT5_SPENT_MS=0
     fi
-    BEAT5_DWELL="$(awk -v tgt="20" -v spent="$BEAT5_SPENT_MS" -v min="14" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
+    BEAT5_DWELL="$(awk -v tgt="10" -v spent="$BEAT5_SPENT_MS" -v min="8" 'BEGIN { rem = tgt - (spent / 1000.0); if (rem < min) rem = min; if (rem < 0) rem = 0; printf "%.2f", rem }')"
     dwell_sleep "$BEAT5_DWELL"
     end_active_beat
     write_timestamp_report 1

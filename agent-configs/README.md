@@ -20,7 +20,7 @@ All templates use environment variable placeholders — **never commit real toke
 - [`opencode.json`](./opencode.json) — OpenCode (`opencode.json`)
 - [`claude-code.mcp.json`](./claude-code.mcp.json) — Claude Code (`.mcp.json`)
 - [`vscode.mcp.json`](./vscode.mcp.json) — VS Code / GitHub Copilot (`.vscode/mcp.json`)
-- [`codex.toml`](./codex.toml) — OpenAI Codex CLI (`~/.codex/config.toml`)
+- [`codex.toml`](./codex.toml) — OpenAI Codex CLI (`~/.codex/config.toml` or project-level `.codex/config.toml`)
 - [`kiro.mcp.json`](./kiro.mcp.json) — Kiro (`.kiro/settings/mcp.json`)
 
 ## Local Standards Guard Stdio MCP Server
@@ -51,6 +51,7 @@ set -a && source .env && set +a
 opencode mcp list
 cursor-agent mcp list
 cursor-agent mcp list-tools standards-guard
+codex mcp list
 ```
 
 When opening the Cursor IDE desktop app with `GUARD_MODE=live`, launch it from a shell that has `.env` exported (`set -a && source .env && set +a && cursor .`) so `${env:MEKO_API_TOKEN}` resolves cleanly.
